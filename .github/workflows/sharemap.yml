@@ -27,6 +27,11 @@ jobs:
           cache: npm
       - run: npm ci
       - run: node node_modules/electron/install.js
+      - name: Use a canonical temporary directory
+        shell: pwsh
+        run: |
+          "TEMP=${{ runner.temp }}" >> $env:GITHUB_ENV
+          "TMP=${{ runner.temp }}" >> $env:GITHUB_ENV
       - run: npm test
       - run: npm run test:shared-ui
       - run: npm run build:sharemap
