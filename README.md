@@ -1,3 +1,12 @@
+ShareMap Desktop fork
+--------------------
+
+This fork adds automatic AutoSave, merging of shared edits, recent-editor
+indicators and native OneDrive sharing for `.drawio` files in Windows OneDrive
+and SharePoint sync folders. It works with any map; no document or tenant is
+hardcoded. See [usage, build instructions and limits](doc/SHAREPOINT_COLLABORATION.md).
+Changes follow OneDrive delivery rather than Excel's instant co-authoring service.
+
 About
 ----- 
 

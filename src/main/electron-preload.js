@@ -86,6 +86,7 @@ ipcRenderer.on('fileChanged', (event, resp) =>
 
 contextBridge.exposeInMainWorld(
     'electron', {
+		sharedFolder: (request) => ipcRenderer.invoke('shared-folder', request),
         request: (msg, callback, error) => 
 		{
 			msg.reqId = reqId++;

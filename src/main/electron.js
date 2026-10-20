@@ -18,6 +18,7 @@ import { getPrintOptions } from './print-options.js';
 import FileWatcher from './file-watcher.js';
 import { ConfigPathGrants } from './config-paths.js';
 import { getUrlParams, getUrlParamsFiles } from './url-params.js';
+import { registerSharedFolder, sharedFolderScript } from './shared-folder-ipc.js';
 import elecUpPkg from 'electron-updater';
 const {autoUpdater} = elecUpPkg;
 import {PDFDocument, PDFHexString, PDFName} from '@cantoo/pdf-lib';
@@ -27,6 +28,11 @@ import contextMenu from 'electron-context-menu';
 import {spawn, execFile} from 'child_process';
 import {disableUpdate as disUpPkg} from './disableUpdate.js';
 
+// Keep the fork's settings, drafts and instance lock separate from draw.io.
+app.setName('ShareMap Desktop');
+app.setPath('userData', app.commandLine.getSwitchValue('user-data-dir') || path.join(app.getPath('appData'), 'ShareMap Desktop'));
+// The upstream bootstrap detects its desktop adapter by this UA token.
+app.userAgentFallback += ' draw.io/' + app.getVersion();
 let store;
 
 try
@@ -4452,7 +4458,12 @@ ipcMain.on('app-load-finished', (e) =>
 	if (!validateSender(e.senderFrame)) return null;
 
 	configPathGrants.collect(e.sender);
+	sharedFolderScript(__dirname).then(script =>
+		e.sender.isDestroyed() ? null : e.sender.executeJavaScript(script))
+		.catch(err => log.error('Shared folder initialization:', err.message));
 });
+
+registerSharedFolder({ipcMain, validateSender, assertWritablePath, clipboard, shell});
 
 ipcMain.on("rendererReq", async (event, args) =>
 {
