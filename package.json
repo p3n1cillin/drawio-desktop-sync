@@ -1,5 +1,5 @@
 {
-  "name": "sharemap-desktop",
+  "name": "drawio-desktop-sync",
   "version": "32.5.5",
   "description": "draw.io Desktop with automatic OneDrive and SharePoint collaboration",
   "exports": "./src/main/electron.js",
@@ -18,11 +18,11 @@
     "release-linux": "electron-builder --config electron-builder-linux-mac.json --publish always",
     "release-snap": "electron-builder --config electron-builder-snap.json --publish never",
     "test:shared-ui": "electron ./src/test/shared-folder.electron.js",
-    "build:sharemap": "node ./sync.cjs disableUpdate && electron-builder --config electron-builder-sharemap.json --win zip --x64 --publish never"
+    "build:sync": "node ./sync.cjs disableUpdate && electron-builder --config electron-builder-sync.json --win zip --x64 --publish never"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/p3n1cillin/drawio-desktop.git"
+    "url": "https://github.com/p3n1cillin/drawio-desktop-sync.git"
   },
   "keywords": [
     "draw.io",
@@ -33,9 +33,9 @@
   "author": "JGraph <support@draw.io>",
   "license": "GPL-3.0-only",
   "bugs": {
-    "url": "https://github.com/p3n1cillin/drawio-desktop/issues"
+    "url": "https://github.com/p3n1cillin/drawio-desktop-sync/issues"
   },
-  "homepage": "https://github.com/p3n1cillin/drawio-desktop",
+  "homepage": "https://github.com/p3n1cillin/drawio-desktop-sync",
   "dependencies": {
     "@cantoo/pdf-lib": "^2.7.3",
     "buffer": "^6.0.3",

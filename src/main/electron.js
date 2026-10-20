@@ -29,8 +29,8 @@ import {spawn, execFile} from 'child_process';
 import {disableUpdate as disUpPkg} from './disableUpdate.js';
 
 // Keep the fork's settings, drafts and instance lock separate from draw.io.
-app.setName('ShareMap Desktop');
-app.setPath('userData', app.commandLine.getSwitchValue('user-data-dir') || path.join(app.getPath('appData'), 'ShareMap Desktop'));
+app.setName('drawio-desktop-sync');
+app.setPath('userData', app.commandLine.getSwitchValue('user-data-dir') || path.join(app.getPath('appData'), 'drawio-desktop-sync'));
 // The upstream bootstrap detects its desktop adapter by this UA token.
 app.userAgentFallback += ' draw.io/' + app.getVersion();
 let store;

@@ -1,6 +1,6 @@
 # OneDrive and SharePoint collaboration
 
-ShareMap Desktop adds automatic saving, shared editing and native OneDrive
+drawio-desktop-sync adds automatic saving, shared editing and native OneDrive
 sharing to draw.io Desktop. It works with any `.drawio` file in a registered
 Windows OneDrive or SharePoint sync folder. No company, tenant, map name or map
 path is built into the app.
@@ -80,7 +80,7 @@ Use Node 22.12+ and a recursive checkout:
 npm ci
 npm test
 npm run test:shared-ui
-npm run build:sharemap
+npm run build:sync
 ```
 
 If npm skips Electron's install script, run

@@ -1,5 +1,8 @@
-ShareMap Desktop fork
+drawio-desktop-sync fork
 --------------------
+
+[Download the Windows x64 preview](https://github.com/p3n1cillin/drawio-desktop-sync/releases/tag/v32.5.5-sync.1).
+Extract the ZIP and run `drawio-desktop-sync.exe`.
 
 This fork adds automatic AutoSave, merging of shared edits, recent-editor
 indicators and native OneDrive sharing for `.drawio` files in Windows OneDrive

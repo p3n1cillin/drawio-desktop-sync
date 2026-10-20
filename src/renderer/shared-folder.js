@@ -321,7 +321,7 @@ Draw.loadPlugin(function(ui)
 		title.textContent = 'SharePoint collaboration';
 		div.appendChild(title);
 		const text = document.createElement('p');
-		text.textContent = 'Keep the map and its .collab folder together in your synced SharePoint folder. Everyone edits with ShareMap Desktop. Changes merge when OneDrive syncs; there is no additional server. Mark both items “Always keep on this device”.';
+		text.textContent = 'Keep the map and its .collab folder together in your synced SharePoint folder. Everyone edits with drawio-desktop-sync. Changes merge when OneDrive syncs; there is no additional server. Mark both items “Always keep on this device”.';
 		div.appendChild(text);
 		const nameLabel = document.createElement('label');
 		nameLabel.textContent = 'Your name';

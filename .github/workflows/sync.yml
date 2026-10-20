@@ -1,4 +1,4 @@
-name: ShareMap Windows build
+name: drawio-desktop-sync Windows build
 
 on:
   workflow_dispatch:
@@ -6,8 +6,8 @@ on:
     paths:
       - 'src/**'
       - 'package*.json'
-      - 'electron-builder-sharemap.json'
-      - '.github/workflows/sharemap.yml'
+      - 'electron-builder-sync.json'
+      - '.github/workflows/sync.yml'
 
 permissions:
   contents: read
@@ -34,8 +34,8 @@ jobs:
           "TMP=${{ runner.temp }}" >> $env:GITHUB_ENV
       - run: npm test
       - run: npm run test:shared-ui
-      - run: npm run build:sharemap
+      - run: npm run build:sync
       - uses: actions/upload-artifact@v6
         with:
-          name: ShareMap-Desktop-Windows-x64
-          path: dist/sharemap/*.zip
+          name: drawio-desktop-sync-Windows-x64
+          path: dist/sync/*.zip

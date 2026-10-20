@@ -1,10 +1,10 @@
 {
   "extends": "./electron-builder-win.json",
-  "appId": "uk.sharemap.desktop",
-  "productName": "ShareMap Desktop",
-  "artifactName": "ShareMap-Desktop-${version}-${arch}.${ext}",
+  "appId": "io.github.p3n1cillin.drawio-desktop-sync",
+  "productName": "drawio-desktop-sync",
+  "artifactName": "drawio-desktop-sync-${version}-${arch}.${ext}",
   "directories": {
-    "output": "./dist/sharemap"
+    "output": "./dist/sync"
   },
   "files": [
     "**/*",
