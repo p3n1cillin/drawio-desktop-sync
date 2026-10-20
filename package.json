@@ -1,7 +1,7 @@
 {
-  "name": "draw.io",
+  "name": "drawio-desktop-sync",
   "version": "32.5.5",
-  "description": "draw.io desktop",
+  "description": "draw.io Desktop with automatic OneDrive and SharePoint collaboration",
   "exports": "./src/main/electron.js",
   "type": "module",
   "main": "src/main/electron.js",
@@ -11,16 +11,18 @@
   "scripts": {
     "start": "electron .",
     "sync": "node ./sync.cjs",
-    "test": "node --test src/test/cli-args.test.js src/test/msi-project-created.test.js src/test/window-bounds.test.js src/test/update-channel.test.js src/test/update-mode.test.js src/test/export-files.test.js src/test/system-path.test.js src/test/file-watcher.test.js src/test/backup-file.test.js src/test/config-paths.test.js src/test/print-options.test.js src/test/url-params.test.js",
+    "test": "node --test src/test/cli-args.test.js src/test/msi-project-created.test.js src/test/window-bounds.test.js src/test/update-channel.test.js src/test/update-mode.test.js src/test/export-files.test.js src/test/system-path.test.js src/test/file-watcher.test.js src/test/backup-file.test.js src/test/config-paths.test.js src/test/print-options.test.js src/test/url-params.test.js src/test/shared-folder.test.js src/test/onedrive-shell.test.js",
     "release-win": "electron-builder --config electron-builder-win.json --publish always",
     "release-win-arm64": "electron-builder --config electron-builder-win-arm64.json --publish always",
     "release-appx": "electron-builder --config electron-builder-appx.json --publish never",
     "release-linux": "electron-builder --config electron-builder-linux-mac.json --publish always",
-    "release-snap": "electron-builder --config electron-builder-snap.json --publish never"
+    "release-snap": "electron-builder --config electron-builder-snap.json --publish never",
+    "test:shared-ui": "electron ./src/test/shared-folder.electron.js",
+    "build:sync": "node ./sync.cjs disableUpdate && electron-builder --config electron-builder-sync.json --win zip --x64 --publish never"
   },
   "repository": {
     "type": "git",
-    "url": "git@github.com:jgraph/drawio-desktop.git"
+    "url": "https://github.com/p3n1cillin/drawio-desktop-sync.git"
   },
   "keywords": [
     "draw.io",
@@ -31,9 +33,9 @@
   "author": "JGraph <support@draw.io>",
   "license": "GPL-3.0-only",
   "bugs": {
-    "url": "https://github.com/jgraph/drawio-desktop/issues"
+    "url": "https://github.com/p3n1cillin/drawio-desktop-sync/issues"
   },
-  "homepage": "https://github.com/jgraph/drawio",
+  "homepage": "https://github.com/p3n1cillin/drawio-desktop-sync",
   "dependencies": {
     "@cantoo/pdf-lib": "^2.7.3",
     "buffer": "^6.0.3",
