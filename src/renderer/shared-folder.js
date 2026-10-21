@@ -408,10 +408,11 @@ Draw.loadPlugin(function(ui)
 		s.applied = ordered.ready.map(op => op.id);
 		s.needsSnapshot = true;
 		s.initialized = true;
+		s.paused = localStorage.getItem(autoSaveKey(s)) === 'off';
 		autoSave.style.display = 'inline-block';
 		autoSave.disabled = false;
-		autoSave.textContent = 'AutoSave  On';
-		autoSave.setAttribute('aria-pressed', 'true');
+		autoSave.textContent = 'AutoSave  ' + (s.paused ? 'Off' : 'On');
+		autoSave.setAttribute('aria-pressed', String(!s.paused));
 		s.file.setModified(false);
 		ui.setGraphEnabled(s.file.isEditable());
 		await cycle(s);
@@ -614,15 +615,27 @@ Draw.loadPlugin(function(ui)
 		ui.showDialog(div, 540, 260, true, true);
 	}
 
+	function autoSaveKey(s) { return '.sharemapAutoSave.' + s.manifest.room + '.' + s.client; }
 	const autoSave = button('AutoSave  On', () =>
 	{
 		if (!session) return;
 		graph.stopEditing();
-		session.paused = !session.paused;
+		const paused = !session.paused;
+		localStorage.setItem(autoSaveKey(session), paused ? 'off' : 'on');
+		session.paused = paused;
 		autoSave.textContent = 'AutoSave  ' + (session.paused ? 'Off' : 'On');
 		autoSave.setAttribute('aria-pressed', String(!session.paused));
 		status.textContent = session.paused ? 'AutoSave off · Ctrl+S to save' : 'Saving…';
 		if (!session.paused) return cycle(session);
+	});
+	window.addEventListener('drawio-preference-changed', event =>
+	{
+		const s = session;
+		if (!s?.initialized || event.detail.key !== autoSaveKey(s)) return;
+		s.paused = event.detail.value === 'off';
+		autoSave.textContent = 'AutoSave  ' + (s.paused ? 'Off' : 'On');
+		autoSave.setAttribute('aria-pressed', String(!s.paused));
+		if (!s.paused) cycle(s);
 	});
 		autoSave.style.display = 'none';
 	autoSave.style.cssText += ';border:1px solid #8886;border-radius:14px;padding:5px 10px;white-space:nowrap';

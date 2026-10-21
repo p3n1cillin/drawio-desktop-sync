@@ -45,6 +45,26 @@ versions in the background and install when the app closes. Help includes
 update settings and Restart to Update. Portable builds notify only. Older
 `sync.1` through `sync.5` previews need a one-time installer upgrade.
 
+## Saved settings and live configuration
+
+**Extras → Configuration** keeps both the visual Editor controls and JSON.
+Apply changes guides, connection behavior, folding, wheel zoom, grid options,
+compact mode and other supported runtime options in existing editor windows.
+It does not reload the diagram. Startup-only options are saved; the dialog names
+those that need a new editor window, instead of requesting a full app restart.
+Local file-access approvals and plugin loading still happen at window startup.
+
+Configuration and editor preferences are mirrored to `editor-preferences.json`
+in the app's user-data folder, outside the installation directory. They restore
+before editor startup if Chromium storage is lost or its origin changes during
+an update. Explicit resets are remembered. Native update settings, server setup
+and map credentials also remain in the user profile; installers retain them.
+The backup copies preference entries, not separate login tokens or diagram drafts.
+An explicit Configuration `override` still intentionally overrides user settings.
+The shared-map AutoSave choice is remembered per map and installation. Spell
+checking, backup and automatic-update switches update existing window menus live.
+Updates to application code still take effect after installing and reopening it.
+
 ## Build and test
 
 Use Node 24 LTS and clone with submodules. Run `npm ci`, `npm test`,

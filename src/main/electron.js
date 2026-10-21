@@ -21,6 +21,7 @@ import { getUrlParams, getUrlParamsFiles } from './url-params.js';
 import { registerSharedFolder, sharedFolderScript } from './shared-folder-ipc.js';
 import {ServerMaps, parseInvite} from './server-folder.js';
 import {prepareServerArguments} from './server-launch.js';
+import {EditorPreferences, registerEditorPreferences} from './editor-preferences.js';
 import {randomUUID} from 'node:crypto';
 import elecUpPkg from 'electron-updater';
 const {autoUpdater} = elecUpPkg;
@@ -532,6 +533,11 @@ function validateSender (frame)
 	return frame.url.replace(/\/.\:\//, str => str.toUpperCase()).startsWith(codeUrl);
 }
 
+let editorPreferenceStore;
+try { editorPreferenceStore = new EditorPreferences(new Store({name: 'editor-preferences'})); }
+catch (error) { log.error('Editor preference storage:', error); }
+registerEditorPreferences({ipcMain, validateSender, preferences: editorPreferenceStore});
+
 function createWindow (opt = {})
 {
 	let lastWinSizeStr = (store && store.get('lastWinSize')) || '1200,800,0,0,false,false';
@@ -553,7 +559,8 @@ function createWindow (opt = {})
 		icon: `${codeDir}/images/drawlogo256.png`,
 		webPreferences: {
 			preload: `${__dirname}/electron-preload.js`,
-			spellcheck: enableSpellCheck,
+			// Keep the provider available; the session preference switches it live.
+			spellcheck: true,
 			contextIsolation: true,
 			nodeIntegration: false,
 			// webviewTag and webSecurity belong here, not on the top-level
@@ -841,6 +848,7 @@ app.whenReady().then(async () =>
 	// Determine initial defaultAdaptiveColors for the drawio Configuration
 	// before any window is created so the value is passed to the preload.
 	initialAdaptiveColorsDefault = detectInitialAdaptiveColorsDefault();
+	session.defaultSession.setSpellCheckerEnabled(enableSpellCheck);
 
 	// Enforce our CSP on all contents
 	session.defaultSession.webRequest.onHeadersReceived((details, callback) =>
@@ -1701,6 +1709,9 @@ app.whenReady().then(async () =>
 		{
 			enableSpellCheck = !enableSpellCheck;
 			store.set('enableSpellCheck', enableSpellCheck);
+			queryObj.enableSpellCheck = enableSpellCheck ? 1 : 0;
+			session.defaultSession.setSpellCheckerEnabled(enableSpellCheck);
+			broadcastDesktopPreferences();
 		}
 	};
 
@@ -1714,6 +1725,8 @@ app.whenReady().then(async () =>
 		{
 			enableStoreBkp = !enableStoreBkp;
 			store.set('enableStoreBkp', enableStoreBkp);
+			queryObj.enableStoreBkp = enableStoreBkp ? 1 : 0;
+			broadcastDesktopPreferences();
 		}
 	};
 
@@ -1727,6 +1740,7 @@ app.whenReady().then(async () =>
 		{
 			isGoogleFontsEnabled = !isGoogleFontsEnabled;
 			store.set('isGoogleFontsEnabled', isGoogleFontsEnabled);
+			queryObj.isGoogleFontsEnabled = isGoogleFontsEnabled ? 1 : 0;
 		}
 	}
 
@@ -1814,7 +1828,7 @@ app.whenReady().then(async () =>
 
 	function setUpdateIntervalFn()
 	{
-		const hours = [24, 48, 72, 168];
+		const hours = [1, 6, 12, 24, 48, 72, 168];
 		const currentHours = store?.get('updateCheckIntervalHours') ?? DEFAULT_UPDATE_CHECK_HOURS;
 		const buttons = hours.map(h => h === 168 ? '1 week' : `${h} hours`);
 		buttons.push('Cancel');
@@ -1833,6 +1847,7 @@ app.whenReady().then(async () =>
 			if (result.response < hours.length && store != null)
 			{
 				store.set('updateCheckIntervalHours', hours[result.response]);
+				checkForUpdatesIfDue();
 			}
 		});
 	}
@@ -2088,6 +2103,15 @@ app.on('web-contents-created', (event, contents) => {
 
 const DEFAULT_UPDATE_CHECK_HOURS = 1;
 
+function broadcastDesktopPreferences()
+{
+	for (const win of windowsRegistry)
+	{
+		if (!win.isDestroyed()) win.webContents.send('desktop-preferences', {
+			enableSpellCheck, enableStoreBkp, autoUpdate: isAutoUpdateEnabled()});
+	}
+}
+
 // The "Check for Updates Automatically" setting, Extras > Automatic Updates in the editor
 function isAutoUpdateEnabled()
 {
@@ -2112,6 +2136,7 @@ function setAutoUpdateEnabled(enabled)
 	{
 		checkForUpdatesIfDue();
 	}
+	broadcastDesktopPreferences();
 }
 
 let lastUpdateCheck = 0;
@@ -4503,6 +4528,7 @@ function createServerShortcut(folder)
 	return shortcut;
 }
 registerSharedFolder({ipcMain, validateSender, assertWritablePath, clipboard, shell, clientId: sharedFolderClientId,
+	clientBuild: app.getVersion(),
 	serverMaps, blessServerMap: blessPath, createShortcut: createServerShortcut, confirmServer: async request =>
 	{
 		const endpoint = request.action === 'rotateLink' ? request.server : request.action === 'serverJoin' ? parseInvite(request.invite).server :

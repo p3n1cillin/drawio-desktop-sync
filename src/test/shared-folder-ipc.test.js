@@ -19,6 +19,7 @@ function fixture(options = {})
 		shareLink: async () => 'drawio-sync://join/credential', rotateLink: async () => { rotations++; return true; },
 		diagnostics: async () => ({room: 'room', edits: {count: 0}, presence: [], transport: 'server'})};
 	registerSharedFolder({ipcMain: {handle: (_channel, callback) => { handler = callback; }},
+		clientBuild: 'test-build',
 		validateSender: frame => frame === sender.mainFrame, assertWritablePath: async () => {},
 		clipboard: {writeText: value => { copied = value; }},
 		serverMaps: {open: async filename => filename === 'ordinary.drawio' ? null : folder, join: async () => folder.filename, create: async () => folder.filename},
@@ -82,7 +83,7 @@ test('diagnostics include connection timing, sanitize renderer state and exclude
 {
 	const h = fixture(); const info = await h.call({action: 'open', path: 'shared.drawio'});
 	const report = await h.call({action: 'diagnostics', id: info.id, copy: true, editor: {initialized: true, error: 'x'.repeat(2000), xml: 'private diagram'}});
-	assert.equal(report.editor.error.length, 1000); assert.equal(report.clientBuild, '32.5.7');
+	assert.equal(report.editor.error.length, 1000); assert.equal(report.clientBuild, 'test-build');
 	assert.equal(report.connection.requests, 1); assert.equal(report.editor.xml, undefined);
 	assert.equal(h.copied().includes('private diagram'), false);
 });
