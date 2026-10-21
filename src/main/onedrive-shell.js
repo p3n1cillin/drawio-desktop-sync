@@ -5,6 +5,7 @@ import {getSystem32Path} from './system-path.js';
 
 const run = promisify(execFile);
 let rootsPromise;
+let rootsExpires = 0;
 async function powershell(script, environment = {})
 {
 	const result = await run(getSystem32Path('WindowsPowerShell/v1.0/powershell.exe'),
@@ -16,8 +17,8 @@ async function powershell(script, environment = {})
 export function resolveSyncLocation(filename, roots)
 {
 	const normalized = path.win32.resolve(filename);
-	const matches = roots.filter(root => root.MountPoint && root.UrlNamespace &&
-		(normalized.toLowerCase().startsWith(path.win32.resolve(root.MountPoint).toLowerCase() + '\\')))
+	const matches = (Array.isArray(roots) ? roots : []).filter(root => root && typeof root.MountPoint === 'string' && typeof root.UrlNamespace === 'string' &&
+		(normalized.toLowerCase().startsWith(path.win32.resolve(root.MountPoint).replace(/\\+$/, '').toLowerCase() + '\\')))
 		.sort((a, b) => b.MountPoint.length - a.MountPoint.length);
 	for (const root of matches)
 	{
@@ -25,8 +26,11 @@ export function resolveSyncLocation(filename, roots)
 		try { base = new URL(root.UrlNamespace); } catch { continue; }
 		if (base.protocol !== 'https:' || !/^[a-z0-9-]+\.sharepoint\.com$/i.test(base.hostname) || base.username || base.password) continue;
 		const parts = path.win32.relative(root.MountPoint, normalized).split('\\');
-		const fileUrl = new URL(parts.map(encodeURIComponent).join('/'), base.href.replace(/\/?$/, '/')).href;
-		const folderUrl = new URL(parts.slice(0, -1).map(encodeURIComponent).join('/') + '/', base.href.replace(/\/?$/, '/')).href;
+		base.search = '';
+		base.hash = '';
+		base.pathname = base.pathname.replace(/\/?$/, '/');
+		const fileUrl = new URL(parts.map(encodeURIComponent).join('/'), base).href;
+		const folderUrl = parts.length === 1 ? base.href : new URL(parts.slice(0, -1).map(encodeURIComponent).join('/') + '/', base).href;
 		return {fileUrl, folderUrl};
 	}
 	return null;
@@ -35,12 +39,13 @@ export function resolveSyncLocation(filename, roots)
 export async function getSyncLocation(filename)
 {
 	if (process.platform !== 'win32') return null;
-	if (!rootsPromise)
+	if (!rootsPromise || Date.now() >= rootsExpires)
 	{
+		rootsExpires = Date.now() + 60000;
 		// Read only the registered mount points and web namespaces. No tokens,
 		// cookies, account databases or private OneDrive protocols are accessed.
 		rootsPromise = powershell("$ErrorActionPreference='Stop'; $roots=@(Get-ChildItem 'HKCU:\\Software\\SyncEngines\\Providers\\OneDrive' -ErrorAction SilentlyContinue | ForEach-Object { $p=Get-ItemProperty $_.PSPath; [pscustomobject]@{MountPoint=$p.MountPoint;UrlNamespace=$p.UrlNamespace} }); ConvertTo-Json -InputObject $roots -Compress")
-			.then(json => JSON.parse(json || '[]')).catch(() => []);
+			.then(json => JSON.parse(json || '[]')).catch(() => { rootsExpires = 0; return []; });
 	}
 	return resolveSyncLocation(filename, await rootsPromise);
 }

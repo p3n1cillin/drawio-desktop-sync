@@ -8,6 +8,7 @@ Draw.loadPlugin(function(ui)
 	let session = null;
 	let probing = null;
 	let probeTask = null;
+	let probeRetryAt = 0;
 	let timer = null;
 	const bar = document.createElement('div');
 	bar.style.cssText = 'position:fixed;top:7px;right:150px;z-index:4;display:flex;align-items:center;gap:10px;padding:3px 6px;color:light-dark(#222,#eee);font:12px Arial,sans-serif;max-width:calc(100vw - 410px)';
@@ -94,8 +95,13 @@ Draw.loadPlugin(function(ui)
 	{
 		return !mxUtils.isEmptyObject(capture(s).patch);
 	}
+	function active(s)
+	{
+		return session === s && ui.getCurrentFile() === s.file;
+	}
 	async function publish(s)
 	{
+		if (!active(s)) return;
 		const change = capture(s);
 		if (!mxUtils.isEmptyObject(change.patch))
 		{
@@ -134,6 +140,7 @@ Draw.loadPlugin(function(ui)
 				// transaction is captured on the next tick.
 				if (graph.isEditing() || graph.mouseDown) return;
 				await publish(s);
+				if (!active(s)) return;
 				const incoming = await call('scan', {}, s);
 				if (session !== s || ui.getCurrentFile() !== s.file) return;
 				for (const op of incoming) s.records.set(op.id, op);
@@ -163,6 +170,7 @@ Draw.loadPlugin(function(ui)
 				{
 					if (await call('snapshot', {xml, heads: s.heads}, s)) s.snapshot = xml;
 				}
+				if (!active(s)) return;
 				if (!dirty(s))
 				{
 					s.file.setModified(false);
@@ -184,7 +192,7 @@ Draw.loadPlugin(function(ui)
 					{
 						const peers = await call('activity', {name: localStorage.getItem('.sharemapName') || s.name,
 							page: ui.currentPage && ui.currentPage.getId(), selection: graph.getSelectionCells().map(cell => cell.id)}, s);
-						if (session === s) showPeople(peers, s);
+						if (active(s)) showPeople(peers, s);
 					}
 					catch { /* Presence is best effort; journal saving remains available. */ }
 				}
@@ -192,8 +200,11 @@ Draw.loadPlugin(function(ui)
 			catch (e)
 			{
 				s.error = e;
-				status.textContent = 'Sync paused · Retry';
-				status.title = e.message;
+				if (active(s))
+				{
+					status.textContent = 'Sync paused · Retry';
+					status.title = e.message;
+				}
 				// Never clear modified state on failed IO. Clicking status retries.
 			}
 		})().finally(() => { s.running = null; });
@@ -232,7 +243,7 @@ Draw.loadPlugin(function(ui)
 		autoSave.textContent = 'AutoSave  On';
 		autoSave.setAttribute('aria-pressed', 'true');
 		s.file.setModified(false);
-		ui.setGraphEnabled(true);
+		ui.setGraphEnabled(s.file.isEditable());
 		await cycle(s);
 		})();
 		try { await s.initializing; }
@@ -240,23 +251,39 @@ Draw.loadPlugin(function(ui)
 	}
 	async function flush(s)
 	{
+		const check = () => { if (!active(s)) throw new Error('The document changed while saving. Reopen it to check the saved edits.'); };
+		check();
 		await cycle(s);
-		for (let attempt = 0; attempt < 3 && s.initialized && !s.error && dirty(s); attempt++) await cycle(s);
+		check();
+		for (let attempt = 0; attempt < 3 && s.initialized && !s.error && dirty(s); attempt++)
+		{
+			await cycle(s);
+			check();
+		}
 		if (s.error || !s.initialized || dirty(s)) throw s.error || new Error('Edits are still being saved. Retry.');
 	}
 	async function open(create = false)
 	{
 		if (probeTask)
 		{
-			await probeTask;
-			if (create && !session) return open(true);
+			const pendingFile = probing;
+			const current = ui.getCurrentFile();
+			if (current && current.fileObject && /\.drawio$/i.test(current.fileObject.path) && current.isEditable())
+			{
+				current.shareMapGuard = true;
+				current.clearAutosave();
+				ui.setGraphEnabled(false);
+			}
+			try { await probeTask; }
+			catch (e) { if (ui.getCurrentFile() === pendingFile) throw e; }
+			if (ui.getCurrentFile() !== pendingFile || (create && !session)) return open(create);
 			return session;
 		}
 		const file = ui.getCurrentFile();
-		if (!file || !file.fileObject || !/\.drawio$/i.test(file.fileObject.path))
+		if (!file || !file.fileObject || !/\.drawio$/i.test(file.fileObject.path) || !file.isEditable())
 		{
 			if (create) throw new Error('Save this map as a .drawio file in your OneDrive-synced SharePoint folder first.');
-			if (session && session.file !== file)
+			if (session && (session.file !== file || !file.isEditable()))
 			{
 				await call('close', {}, session);
 				session = null;
@@ -299,7 +326,7 @@ Draw.loadPlugin(function(ui)
 				else
 				{
 					file.shareMapGuard = false;
-					ui.setGraphEnabled(true);
+					ui.setGraphEnabled(file.isEditable());
 					autoSave.style.display = 'none';
 					status.textContent = 'Save to OneDrive to collaborate';
 				}
@@ -307,6 +334,7 @@ Draw.loadPlugin(function(ui)
 			}
 			finally
 			{
+				probeRetryAt = Date.now() + 5000;
 				probing = null;
 				probeTask = null;
 			}
@@ -411,7 +439,11 @@ Draw.loadPlugin(function(ui)
 	status.style.cursor = 'pointer';
 	status.addEventListener('click', () =>
 	{
-		if (session && session.initialized) cycle(session).then(() => { if (session.error) showError(session.error); });
+		if (session && session.initialized)
+		{
+			const s = session;
+			cycle(s).then(() => { if (active(s) && s.error) showError(s.error); });
+		}
 		else if (session) initialize(session).catch(showError);
 		else open().catch(showError);
 	});
@@ -423,6 +455,19 @@ Draw.loadPlugin(function(ui)
 		return !this.shareMapGuard && this !== probing && !(session && session.file === this) && originalAutosave.apply(this, arguments);
 	};
 	const originalSave = LocalFile.prototype.save;
+	function saveOrdinary(file, args)
+	{
+		const values = Array.from(args);
+		const success = values[1];
+		values[1] = function()
+		{
+			// First save and Save As do not emit fileLoaded. Discover a newly
+			// saved cloud file now so collaboration starts without reopening it.
+			if (ui.getCurrentFile() === file) open().catch(showError);
+			if (success) success.apply(this, arguments);
+		};
+		return originalSave.apply(file, values);
+	}
 	LocalFile.prototype.save = function(revision, success, error)
 	{
 		if (session && session.file === this)
@@ -434,26 +479,27 @@ Draw.loadPlugin(function(ui)
 				graph.stopEditing();
 				flush(s).then(async () =>
 				{
-					if (s.error || dirty(s)) throw s.error || new Error('Wait for your edits to save before exporting a copy.');
 					await call('close', {}, s);
+					if (!active(s)) throw new Error('The document changed while saving a copy. Retry.');
 					session = null;
 					showPeople([], {});
+					autoSave.style.display = 'none';
 					this.shareMapGuard = false;
 					status.textContent = 'Standalone copy · Collaborate to share';
-					originalSave.apply(this, args);
+					saveOrdinary(this, args);
 				}).catch(e => { if (error) error(e); else showError(e); });
 				return;
 			}
 			graph.stopEditing();
-			flush(session).then(() =>
+			const s = session;
+			flush(s).then(() =>
 			{
-				if (session.error || !session.initialized || dirty(session)) throw session.error || new Error('Edits are still being saved. Retry.');
 				if (success) success();
 			}).catch(e => { if (error) error(e); else showError(e); });
 			return;
 		}
 		if (this.shareMapGuard || this === probing) { if (error) error({message: 'Wait for the shared map and its collaboration folder to finish opening'}); return; }
-		return originalSave.apply(this, arguments);
+		return saveOrdinary(this, arguments);
 	};
 	const originalChange = ui.handleFileChange;
 	ui.handleFileChange = function(curr, prev, file)
@@ -469,16 +515,18 @@ Draw.loadPlugin(function(ui)
 	{
 		if (session && session.file === this)
 		{
-			cycle(session).then(() =>
+			const s = session;
+			cycle(s).then(() =>
 			{
-				if (session.error) throw session.error;
+				if (!active(s)) throw new Error('The document changed while synchronizing. Retry.');
+				if (s.error) throw s.error;
 				if (success) success();
 			}).catch(error || showError);
 		}
 		else return originalSync.apply(this, arguments);
 	};
-	// Save As exports a standalone copy; strip the marker from exported data
-	// by keeping it only on the journal's materialized view, not ui.fileNode.
+	// Keep the marker only on the journal's materialized view so copies can
+	// initialize their own journal when saved to another cloud location.
 	ui.editor.addListener('fileLoaded', () => open().catch(showError));
 	timer = setInterval(() =>
 	{
@@ -486,6 +534,10 @@ Draw.loadPlugin(function(ui)
 		{
 			if (session.initialized && !session.paused) cycle(session);
 			else if (!session.initialized) initialize(session).catch(e => { status.textContent = 'Waiting for OneDrive · Click for details'; status.title = e.message; });
+		}
+		else if (!probeTask && ui.getCurrentFile()?.shareMapGuard && Date.now() >= probeRetryAt)
+		{
+			open().catch(e => { status.textContent = 'Waiting for OneDrive · Click for details'; status.title = e.message; });
 		}
 	}, 1000);
 	window.addEventListener('unload', () => clearInterval(timer));

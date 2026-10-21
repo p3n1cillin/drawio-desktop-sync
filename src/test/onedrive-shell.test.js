@@ -20,3 +20,11 @@ test('uses longest matching mount, ignores siblings and rejects untrusted namesp
 	assert.equal(resolveSyncLocation('C:\\Sync\\map.drawio', [{MountPoint: 'C:\\Sync', UrlNamespace: 'https://evil.test/'}]), null);
 	assert.equal(resolveSyncLocation('C:\\Sync\\map.drawio', [{MountPoint: 'C:\\Sync', UrlNamespace: 'https://user:pass@example.sharepoint.com/'}]), null);
 });
+
+test('maps files at a library root and tolerates registry trailing separators', () =>
+{
+	const location = resolveSyncLocation('C:\\Sync\\map.drawio', [null,
+		{MountPoint: 'C:\\Sync\\', UrlNamespace: 'https://example.sharepoint.com/sites/IT/Shared%20Documents/'}]);
+	assert.equal(location.folderUrl, 'https://example.sharepoint.com/sites/IT/Shared%20Documents/');
+	assert.equal(location.fileUrl, location.folderUrl + 'map.drawio');
+});

@@ -65,7 +65,7 @@ test('edits from an ordinary editor are preserved and never silently overwritten
 	const {a, filename} = await fixture(t);
 	assert.equal(await a.snapshot('<mxfile>first shared snapshot</mxfile>', []), true);
 	await fs.writeFile(filename, '<mxfile>external editor changes</mxfile>');
-	await assert.rejects(a.snapshot('<mxfile>second shared snapshot</mxfile>', []), /outside ShareMap/);
+	await assert.rejects(a.snapshot('<mxfile>second shared snapshot</mxfile>', []), /outside collaboration/);
 	assert.equal(await fs.readFile(filename, 'utf8'), '<mxfile>external editor changes</mxfile>');
 });
 
@@ -148,4 +148,93 @@ test('recent editor presence and selection are separate from durable edits', asy
 	assert.equal((await a.scan()).length, 0);
 	await a.leave();
 	assert.equal((await b.activity('Bob', 'page', [])).length, 1);
+});
+
+test('UTF-8 edits over the disk limit are rejected before creating an unreadable record', async t =>
+{
+	const {a} = await fixture(t);
+	await assert.rejects(a.append({value: '地'.repeat(1500000)}, [], 'Alice'), /Invalid shared edit/);
+	assert.deepEqual(await a.scan(), []);
+	await a.append({value: '地'.repeat(500000)}, [], 'Alice');
+	assert.equal((await a.scan()).length, 1);
+});
+
+test('a valid large base with JSON escaping can be reopened', async t =>
+{
+	const {filename, a} = await fixture(t);
+	await fs.rm(a.directory, {recursive: true});
+	const base = '"'.repeat(9 * 1024 * 1024);
+	await a.open(base);
+	const reopened = new SharedFolder(filename);
+	await reopened.open();
+	assert.equal(reopened.manifest.base, base);
+});
+
+test('reopening an externally changed map stops before replay replaces the canvas', async t =>
+{
+	const {filename} = await fixture(t);
+	const changed = '<mxfile>work saved outside collaboration</mxfile>';
+	await fs.writeFile(filename, changed);
+	await assert.rejects(new SharedFolder(filename).open(), /outside/);
+	assert.equal(await fs.readFile(filename, 'utf8'), changed);
+});
+
+test('reopening a known materialized snapshot is supported', async t =>
+{
+	const {a, filename} = await fixture(t);
+	await a.snapshot('<mxfile>journal snapshot</mxfile>', []);
+	assert.ok(await new SharedFolder(filename).open());
+});
+
+test('the last saved sharing link wins even when its hash sorts earlier', async t =>
+{
+	const {a} = await fixture(t);
+	// Alternate repeatedly so this fails regardless of the two hashes' order.
+	for (const suffix of ['a', 'b', 'a', 'b'])
+	{
+		const link = 'https://company.sharepoint.com/:f:/s/IT/' + suffix;
+		await a.shareLink(link);
+		assert.equal(await a.shareLink(), link);
+	}
+});
+
+test('an interrupted presence write cannot block subsequent heartbeats', async t =>
+{
+	const {a} = await fixture(t);
+	await fs.writeFile(path.join(a.directory, 'presence-' + a.author + '.tmp'), 'interrupted');
+	assert.equal((await a.activity('Alice', 'page', [])).length, 1);
+});
+
+test('a temporary Windows sync lock is retried without losing the completed snapshot', async t =>
+{
+	const {a, filename} = await fixture(t);
+	const rename = fs.rename;
+	let locked = true;
+	t.mock.method(fs, 'rename', async (...args) =>
+	{
+		if (locked)
+		{
+			locked = false;
+			assert.equal(await fs.readFile(filename, 'utf8'), xml);
+			throw Object.assign(new Error('File in use'), {code: 'EPERM'});
+		}
+		return rename(...args);
+	});
+	assert.equal(await a.snapshot('<mxfile>complete snapshot</mxfile>', []), true);
+	assert.equal(await fs.readFile(filename, 'utf8'), '<mxfile>complete snapshot</mxfile>');
+});
+
+test('failed durable writes remove their temporary files and leave existing records intact', async t =>
+{
+	const {a} = await fixture(t);
+	const open = fs.open;
+	t.mock.method(fs, 'open', async (...args) =>
+	{
+		const handle = await open(...args);
+		return {writeFile: async () => { throw Object.assign(new Error('Disk full'), {code: 'ENOSPC'}); },
+			close: () => handle.close()};
+	});
+	await assert.rejects(a.append({value: 'Unsaved'}, [], 'Alice'), /Disk full/);
+	assert.deepEqual((await fs.readdir(a.directory)).filter(name => name.endsWith('.tmp')), []);
+	assert.deepEqual(await a.scan(), []);
 });
