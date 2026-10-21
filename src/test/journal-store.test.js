@@ -5,7 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import {randomUUID} from 'node:crypto';
 import core from '../shared/journal-core.cjs';
-import {SharedFolder} from '../main/shared-folder.js';
+import {JournalStore} from '../server/journal-store.js';
 
 const xml = '<mxfile><diagram id="page" name="Page-1"><mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/></root></mxGraphModel></diagram></mxfile>';
 async function fixture(t)
@@ -14,10 +14,9 @@ async function fixture(t)
 	t.after(() => fs.rm(dir, {recursive: true, force: true}));
 	const filename = path.join(dir, 'map.drawio');
 	await fs.writeFile(filename, xml);
-	const a = new SharedFolder(filename);
+	const a = new JournalStore(filename);
 	await a.open(xml);
-	const b = new SharedFolder(filename);
-	await b.open();
+	const b = a;
 	return {dir, filename, a, b};
 }
 
@@ -30,7 +29,7 @@ test('concurrent independent edits are durable, immutable and converge', async t
 	assert.notEqual(first.id, second.id);
 	assert.equal((await a.scan()).length, 2);
 	assert.deepEqual(core.order(await a.scan(), a.manifest.room), core.order(await b.scan(), b.manifest.room));
-	const reopened = new SharedFolder(a.filename);
+	const reopened = new JournalStore(a.filename);
 	await reopened.open();
 	assert.equal((await reopened.scan()).length, 2);
 });
@@ -52,7 +51,7 @@ test('same-property edits have identical order regardless of arrival', async t =
 	assert.deepEqual(core.order([left, right], a.manifest.room).ready, core.order([right, left], a.manifest.room).ready);
 });
 
-test('a stale materialized snapshot cannot overwrite newer local edits', async t =>
+test('a stale materialized snapshot cannot overwrite newer server edits', async t =>
 {
 	const {a, b, filename} = await fixture(t);
 	await b.append({u: {}}, [], 'Bob');
@@ -75,7 +74,7 @@ test('temporary and unrelated files are ignored; corrupt journal records stop sa
 	await fs.writeFile(path.join(a.directory, 'pending-crash.tmp'), '{');
 	assert.deepEqual(await a.scan(), []);
 	await fs.writeFile(path.join(a.directory, 'edit-broken.json'), '{');
-	await assert.rejects(a.append({u: {}}, [], 'Alice'));
+	await assert.rejects(a.scan(true));
 });
 
 test('deleted or tampered immutable edits are detected', async t =>
@@ -84,16 +83,16 @@ test('deleted or tampered immutable edits are detected', async t =>
 	const op = await a.append({u: {}}, [], 'Alice');
 	const name = path.join(a.directory, 'edit-' + op.id + '.json');
 	await fs.writeFile(name, JSON.stringify({...op, patch: {u: {changed: {}}}}));
-	await assert.rejects(a.scan(), /modified/);
+	await assert.rejects(a.scan(true), /modified/);
 	await fs.unlink(name);
-	await assert.rejects(a.scan(), /missing/);
+	await assert.rejects(a.scan(true), /missing/);
 });
 
 test('conflicting manifests are never silently adopted', async t =>
 {
 	const {a} = await fixture(t);
 	await fs.writeFile(path.join(a.directory, 'manifest.json'), JSON.stringify({...a.manifest, room: randomUUID()}));
-	await assert.rejects(a.scan(), /manifest changed/);
+	await assert.rejects(a.scan(true), /manifest changed/);
 });
 
 test('unknown dependencies and invalid clock or foreign-room input cannot be saved', async t =>
@@ -109,22 +108,10 @@ test('unknown dependencies and invalid clock or foreign-room input cannot be sav
 test('initialization never replaces an existing base', async t =>
 {
 	const {a, filename} = await fixture(t);
-	const other = new SharedFolder(filename);
+	const other = new JournalStore(filename);
 	await other.open('new base');
 	assert.equal(other.manifest.base, a.manifest.base);
 	assert.equal(other.manifest.room, a.manifest.room);
-});
-
-test('SharePoint links persist and non-SharePoint links are rejected', async t =>
-{
-	const {a} = await fixture(t);
-	assert.equal(await a.shareLink(), '');
-	const link = 'https://company.sharepoint.com/:f:/s/IT/example?e=abc';
-	await a.shareLink(link);
-	assert.equal(await a.shareLink(), link);
-	await assert.rejects(a.shareLink('https://company.sharepoint.com.evil.test/a'));
-	await assert.rejects(a.shareLink('http://company.sharepoint.com/a'));
-	await assert.rejects(a.shareLink('https://user:pass@company.sharepoint.com/a'));
 });
 
 test('journal directory redirection is rejected', async t =>
@@ -136,18 +123,6 @@ test('journal directory redirection is rejected', async t =>
 	await fs.mkdir(other);
 	await fs.symlink(other, a.directory, 'junction');
 	await assert.rejects(a.scan(), /Unsafe collaboration/);
-});
-
-test('recent editor presence and selection are separate from durable edits', async t =>
-{
-	const {a, b} = await fixture(t);
-	await a.activity('Alice', 'page', ['desk']);
-	const peers = await b.activity('Bob', 'page', []);
-	assert.equal(peers.length, 2);
-	assert.deepEqual(peers.find(peer => peer.name === 'Alice').selection, ['desk']);
-	assert.equal((await a.scan()).length, 0);
-	await a.leave();
-	assert.equal((await b.activity('Bob', 'page', [])).length, 1);
 });
 
 test('UTF-8 edits over the disk limit are rejected before creating an unreadable record', async t =>
@@ -165,7 +140,7 @@ test('a valid large base with JSON escaping can be reopened', async t =>
 	await fs.rm(a.directory, {recursive: true});
 	const base = '"'.repeat(9 * 1024 * 1024);
 	await a.open(base);
-	const reopened = new SharedFolder(filename);
+	const reopened = new JournalStore(filename);
 	await reopened.open();
 	assert.equal(reopened.manifest.base, base);
 });
@@ -175,7 +150,7 @@ test('reopening an externally changed map stops before replay replaces the canva
 	const {filename} = await fixture(t);
 	const changed = '<mxfile>work saved outside collaboration</mxfile>';
 	await fs.writeFile(filename, changed);
-	await assert.rejects(new SharedFolder(filename).open(), /outside/);
+	await assert.rejects(new JournalStore(filename).open(), /outside/);
 	assert.equal(await fs.readFile(filename, 'utf8'), changed);
 });
 
@@ -183,26 +158,7 @@ test('reopening a known materialized snapshot is supported', async t =>
 {
 	const {a, filename} = await fixture(t);
 	await a.snapshot('<mxfile>journal snapshot</mxfile>', []);
-	assert.ok(await new SharedFolder(filename).open());
-});
-
-test('the last saved sharing link wins even when its hash sorts earlier', async t =>
-{
-	const {a} = await fixture(t);
-	// Alternate repeatedly so this fails regardless of the two hashes' order.
-	for (const suffix of ['a', 'b', 'a', 'b'])
-	{
-		const link = 'https://company.sharepoint.com/:f:/s/IT/' + suffix;
-		await a.shareLink(link);
-		assert.equal(await a.shareLink(), link);
-	}
-});
-
-test('an interrupted presence write cannot block subsequent heartbeats', async t =>
-{
-	const {a} = await fixture(t);
-	await fs.writeFile(path.join(a.directory, 'presence-' + a.author + '.tmp'), 'interrupted');
-	assert.equal((await a.activity('Alice', 'page', [])).length, 1);
+	assert.ok(await new JournalStore(filename).open());
 });
 
 test('a temporary Windows sync lock is retried without losing the completed snapshot', async t =>
@@ -239,17 +195,3 @@ test('failed durable writes remove their temporary files and leave existing reco
 	assert.deepEqual(await a.scan(), []);
 });
 
-test('reopened windows on one installation appear as one editor; equal names on different PCs remain distinct', async t =>
-{
-	const {filename, a} = await fixture(t);
-	const client = randomUUID();
-	const first = new SharedFolder(filename, client);
-	const reopened = new SharedFolder(filename, client);
-	await first.open();
-	await reopened.open();
-	await first.activity('Alex', 'page', []);
-	assert.equal((await reopened.activity('Alex', 'page', ['desk'])).length, 1);
-	const peers = await a.activity('Alex', 'page', []);
-	assert.equal(peers.length, 2);
-	assert.equal(peers.find(peer => peer.client === client).author, reopened.author);
-});

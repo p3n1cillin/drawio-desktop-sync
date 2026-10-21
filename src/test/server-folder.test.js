@@ -113,3 +113,71 @@ test('server snapshots survive restart and old transport markers are replaced', 
 	assert.equal(JSON.stringify(report).includes(xml), false);
 	assert.equal(report.localPath, undefined);
 });
+
+test('incremental sync sends only new edits and refreshes safely across a server restart', async t =>
+{
+	const h = await fixture(t); const filename = await h.owner.create({xml, name: 'Any map.drawio'});
+	const a = await h.owner.open(filename); await a.open();
+	const b = await h.owner.open(filename); await b.open();
+	assert.deepEqual(await b.updates(), []);
+	await a.append({u: {one: {value: 'First'}}}, [], 'A', randomUUID());
+	assert.equal((await b.updates()).length, 1);
+	assert.deepEqual(await b.updates(), []);
+	await h.restart();
+	assert.equal((await b.updates()).length, 1);
+	assert.deepEqual(await b.updates(), []);
+});
+
+test('unknown concurrent values are marked for review; different properties and causal changes merge normally', async t =>
+{
+	const h = await fixture(t); const filename = await h.owner.create({xml, name: 'Any map.drawio'});
+	const a = await h.owner.open(filename); await a.open();
+	const b = await h.owner.open(filename); await b.open();
+	const first = await a.append({u: {page: {cells: {u: {desk: {value: 'A'}}}}}}, [], 'A', randomUUID());
+	const separate = await b.append({u: {page: {cells: {u: {desk: {style: 'green'}}}}}}, [], 'B', randomUUID());
+	assert.equal(separate.conflicts, undefined);
+	const overlap = await b.append({u: {page: {cells: {u: {desk: {value: 'B'}}}}}}, [separate.id], 'B', randomUUID());
+	assert.equal(overlap.conflicts[0].with, first.id);
+	assert.deepEqual(overlap.conflicts[0].path, ['u', 'page', 'cells', 'u', 'desk', 'value']);
+	const resolved = await a.append({u: {page: {cells: {u: {desk: {value: 'Chosen'}}}}}}, [first.id, overlap.id], 'A', randomUUID());
+	assert.equal(resolved.conflicts, undefined);
+});
+
+test('a shared-map shortcut restores a missing cache; it does not create arbitrary ordinary files', async t =>
+{
+	const h = await fixture(t); const filename = await h.owner.create({xml, name: 'Any map.drawio'});
+	const room = path.basename(path.dirname(filename));
+	await fs.unlink(filename);
+	assert.equal(await h.owner.restoreRoom(room), filename);
+	await fs.unlink(filename); await h.owner.restorePath(filename);
+	assert.match(await fs.readFile(filename, 'utf8'), /mxfile/);
+	const unknown = path.join(h.directory, 'not-authorized.drawio'); await h.owner.restorePath(unknown);
+	assert.equal(await fs.stat(unknown).then(() => true).catch(() => false), false);
+	await assert.rejects(h.owner.restoreRoom('../escape'), /Invalid/);
+});
+
+test('presence reports active editing and deduplicates windows from one client without disk heartbeats', async t =>
+{
+	const h = await fixture(t); const filename = await h.owner.create({xml, name: 'Any map.drawio'});
+	const client = randomUUID();
+	const a = await h.owner.open(filename, client); await a.open();
+	const b = await h.owner.open(filename, client); await b.open();
+	await a.activity('Alex', 'page', ['desk'], true, 'desk');
+	const peers = await b.activity('Alex', 'page', ['desk'], true, 'desk');
+	assert.equal(peers.length, 1); assert.equal(peers[0].editing, true); assert.equal(peers[0].editingCell, 'desk');
+	const serverRoom = path.join(h.directory, 'data', a.connection.room, 'map.drawio.collab');
+	assert.equal((await fs.readdir(serverRoom)).some(name => name.startsWith('presence-')), false);
+});
+
+test('warm idle incremental polls do not reread files or return existing edits', async t =>
+{
+	const h = await fixture(t); const filename = await h.owner.create({xml, name: 'Any map.drawio'});
+	const a = await h.owner.open(filename); await a.open();
+	await a.append({u: {one: {value: 'First'}}}, [], 'A', randomUUID());
+	await a.updates();
+	let reads = 0;
+	const original = fs.readFile;
+	t.mock.method(fs, 'readFile', async (...args) => { reads++; return original(...args); });
+	for (let index = 0; index < 5; index++) assert.deepEqual(await a.updates(), []);
+	assert.equal(reads, 0);
+});

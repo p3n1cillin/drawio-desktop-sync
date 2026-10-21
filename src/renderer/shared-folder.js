@@ -4,6 +4,7 @@ Draw.loadPlugin(function(ui)
 	'use strict';
 	if (ui.sharedFolder) return;
 	const core = window.ShareMapJournal;
+	const conflictCore = window.ShareMapConflicts;
 	const graph = ui.editor.graph;
 	let session = null;
 	let probing = null;
@@ -13,29 +14,58 @@ Draw.loadPlugin(function(ui)
 	const bar = document.createElement('div');
 	bar.style.cssText = 'position:fixed;top:7px;right:150px;z-index:4;display:flex;align-items:center;gap:10px;padding:3px 6px;color:light-dark(#222,#eee);font:12px Arial,sans-serif;max-width:calc(100vw - 410px)';
 	const status = document.createElement('span');
-	status.textContent = 'Save to OneDrive to collaborate';
+	status.textContent = 'Open a shared map to collaborate';
 	status.style.cssText = 'max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
 	bar.appendChild(status);
 	const people = document.createElement('div');
 	people.style.cssText = 'display:flex;gap:3px';
 	bar.appendChild(people);
 	let highlights = [];
+	let labels = [];
+	const editingNote = document.createElement('span');
+	editingNote.className = 'geSyncEditingNote';
+	editingNote.style.cssText = 'max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#d89035';
+	bar.appendChild(editingNote);
 	function showPeople(peers, s)
 	{
+		const key = JSON.stringify([s.modelRevision, ui.currentPage?.getId(), graph.view?.scale, graph.view?.translate,
+			graph.getSelectionCells().map(cell => cell.id), peers.map(peer => [peer.author, peer.name, peer.page, peer.selection, peer.editing, peer.editingCell])]);
+		if (s.peopleKey === key) return;
+		s.peopleKey = key;
 		for (const highlight of highlights) highlight.destroy();
+		for (const label of labels) label.remove();
 		highlights = [];
+		labels = [];
+		editingNote.textContent = '';
 		people.replaceChildren();
 		for (const peer of peers.slice(0, 6))
 		{
 			const isYou = peer.author === s.author || (peer.client && peer.client === s.client);
-			const color = ['#2b78d0', '#9854c6', '#bb6332', '#16836a'][parseInt(peer.author.replace(/-/g, '').slice(0, 4), 16) % 4];
+			const color = ['#2b78d0', '#9854c6', '#bb6332', '#16836a', '#c23985', '#567c26', '#a35e1b', '#5369be'][parseInt((peer.client || peer.author).replace(/-/g, '').slice(0, 4), 16) % 8];
 			const avatar = document.createElement('span');
+			avatar.className = 'geSyncAvatar';
 			avatar.textContent = peer.name.slice(0, 2).toUpperCase();
-			avatar.title = peer.name + (isYou ? ' (you)' : ' · recently active; presence follows OneDrive sync');
+			avatar.title = peer.name + (isYou ? ' (you)' : peer.editing ? ' · editing an object' : peer.selection.length ? ' · selecting an object' : ' · viewing this map');
+			if (!isYou)
+			{
+				avatar.style.cursor = 'pointer';
+				avatar.setAttribute('role', 'button');
+				avatar.tabIndex = 0;
+				const follow = () =>
+				{
+					const page = ui.pages?.find(page => page.getId() === peer.page);
+					if (page && page !== ui.currentPage) ui.selectPage(page);
+					const cell = graph.model.getCell(peer.editingCell || peer.selection[0]);
+					if (cell) { graph.setSelectionCell(cell); graph.scrollCellToVisible(cell); }
+				};
+				avatar.addEventListener('click', follow);
+				avatar.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); follow(); } });
+			}
 			avatar.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;border-radius:50%;width:25px;height:25px;color:white;background:' + color + ';font-size:10px';
 			people.appendChild(avatar);
 			if (!isYou && ui.currentPage && peer.page === ui.currentPage.getId())
 			{
+				if (peer.editing && graph.getSelectionCells().some(cell => cell.id === peer.editingCell || peer.selection.includes(cell.id))) editingNote.textContent = peer.name + ' is editing this object';
 				for (const id of peer.selection)
 				{
 					const cell = graph.model.getCell(id);
@@ -45,6 +75,15 @@ Draw.loadPlugin(function(ui)
 						const highlight = new mxCellHighlight(graph, color, 2, true);
 						highlight.highlight(state);
 						highlights.push(highlight);
+						if (graph.container)
+						{
+							const label = document.createElement('div');
+							label.className = 'geSyncPresenceLabel';
+							label.textContent = peer.name + (peer.editing ? ' · editing' : '');
+							label.style.cssText = 'position:absolute;z-index:3;pointer-events:none;padding:2px 5px;border-radius:3px;color:#fff;font:11px Arial;white-space:nowrap;background:' + color + ';left:' + Math.max(0, state.x) + 'px;top:' + Math.max(0, state.y - 18) + 'px';
+							graph.container.appendChild(label);
+							labels.push(label);
+						}
 					}
 				}
 			}
@@ -66,6 +105,105 @@ Draw.loadPlugin(function(ui)
 		status.textContent = 'Needs attention';
 		status.title = message;
 		ui.handleError({message});
+	}
+	function updatePeople(s, peers)
+	{
+		s.lastPeers = peers;
+		s.remotePeers = peers.filter(peer => peer.author !== s.author && peer.client !== s.client).length;
+		showPeople(peers, s);
+	}
+	async function updateActivity(s)
+	{
+		if (!active(s) || s.activityTask) return;
+		const selection = graph.getSelectionCells().map(cell => cell.id);
+		const editing = graph.isEditing() || !!graph.mouseDown;
+		const cell = graph.cellEditor?.editingCell;
+		const state = {page: ui.currentPage?.getId(), selection, editing, editingCell: cell?.id || (graph.mouseDown ? selection[0] : '') || ''};
+		const signature = JSON.stringify(state);
+		const elapsed = Date.now() - (s.lastActivity || 0);
+		if (elapsed < 250 || (signature === s.activitySignature && elapsed < 10000)) return;
+		s.lastActivity = Date.now();
+		s.activityTask = true;
+		try
+		{
+			const peers = await call('activity', {...state, name: localStorage.getItem('.sharemapName') || s.name}, s);
+			if (active(s)) { s.activitySignature = signature; s.presenceError = null; updatePeople(s, peers); }
+		}
+		catch (error) { s.presenceError = error; }
+		finally { s.activityTask = false; }
+	}
+	const reviewButton = button('Review changes', reviewConflicts);
+	reviewButton.style.display = 'none';
+	function collectConflicts(s, op)
+	{
+		if (!Array.isArray(op.conflicts)) return;
+		if (!s.conflicts)
+		{
+			s.conflicts = new Map();
+			try { s.reviewed = new Set(JSON.parse(localStorage.getItem('.sharemapReviewed.' + s.manifest.room) || '[]')); }
+			catch { s.reviewed = new Set(); }
+		}
+		for (const [index, overlap] of op.conflicts.entries())
+		{
+			const key = op.id + ':' + index;
+			if (!s.reviewed.has(key)) s.conflicts.set(key, {key, op, ...overlap});
+		}
+		reviewButton.textContent = 'Review changes (' + s.conflicts.size + ')';
+		reviewButton.style.display = s.conflicts.size ? '' : 'none';
+	}
+	async function resolveConflict(key, earlier)
+	{
+		const s = session;
+		const item = s?.conflicts?.get(key);
+		if (!item) return;
+		if (earlier)
+		{
+			const previous = s.records.get(item.with);
+			if (!previous) throw new Error('The earlier edit is not available yet');
+			graph.stopEditing();
+			await cycle(s);
+			if (!active(s) || s.error) throw s.error || new Error('The document changed');
+			const value = conflictCore.valueAt(previous.patch, item.path);
+			if (value === undefined) throw new Error('The earlier value is not available for this property');
+			s.file.patch([conflictCore.singleField(item.path, value)], null, false, false, true);
+			s.file.setModified(true);
+			await cycle(s);
+			if (s.error) throw s.error;
+		}
+		s.reviewed.add(key);
+		s.conflicts.delete(key);
+		localStorage.setItem('.sharemapReviewed.' + s.manifest.room, JSON.stringify([...s.reviewed].slice(-200)));
+		reviewButton.textContent = 'Review changes (' + s.conflicts.size + ')';
+		reviewButton.style.display = s.conflicts.size ? '' : 'none';
+	}
+	function reviewConflicts()
+	{
+		const s = session;
+		const div = document.createElement('div');
+		div.style.cssText = 'padding:20px;font:14px Arial;line-height:1.5;max-height:360px;overflow:auto';
+		const title = document.createElement('h2'); title.textContent = 'Review overlapping changes'; div.appendChild(title);
+		for (const item of [...(s?.conflicts?.values() || [])].slice(0, 10))
+		{
+			const previous = s.records.get(item.with);
+			const text = document.createElement('p');
+			const field = {value: 'Text', style: 'Formatting', x: 'Horizontal position', y: 'Vertical position', width: 'Width', height: 'Height'}[item.path.at(-1)] || 'The same property';
+			text.textContent = field + ' was changed by ' + (previous?.name || 'another editor') + ' and ' + (item.op.name || 'another editor') + ' before their changes reached each other. Both edits are saved.';
+			div.appendChild(text);
+			if (['value', 'label'].includes(item.path.at(-1)))
+			{
+				for (const [label, op] of [['Earlier', previous], ['Latest', item.op]])
+				{
+					const preview = document.createElement('p');
+					preview.textContent = label + ': ' + String(conflictCore.valueAt(op?.patch, item.path) ?? '').slice(0, 1000);
+					preview.style.cssText = 'white-space:pre-wrap;padding:8px;border:1px solid #8885;border-radius:4px';
+					div.appendChild(preview);
+				}
+			}
+			button('Keep current value', async () => { await resolveConflict(item.key, false); ui.hideDialog(); }, div);
+			button('Use earlier value', async () => { await resolveConflict(item.key, true); ui.hideDialog(); }, div);
+		}
+		button('Close', () => ui.hideDialog(), div);
+		ui.showDialog(div, 590, 420, true, true);
 	}
 	function call(action, values = {}, target = session)
 	{
@@ -94,6 +232,7 @@ Draw.loadPlugin(function(ui)
 	}
 	function dirty(s)
 	{
+		if (!s.pendingPublish && s.file.isModified && !s.file.isModified()) return false;
 		return !mxUtils.isEmptyObject(capture(s).patch);
 	}
 	function active(s)
@@ -104,11 +243,12 @@ Draw.loadPlugin(function(ui)
 	{
 		const peers = s.remotePeers || 0;
 		status.textContent = pending ? 'Downloading changes…' : s.paused ? 'AutoSave off' :
-			(s.transport === 'server' ? 'Saved to server · ' : 'Saved locally · ') + (peers ? (peers + 1) + ' editors seen' : s.transport === 'server' ? 'Connected' : 'Waiting for others');
+			'Saved to server · ' + (peers ? (peers + 1) + ' editors seen' : 'Connected');
 	}
 	async function publish(s)
 	{
 		if (!active(s)) return;
+		if (!s.pendingPublish && s.file.isModified && !s.file.isModified()) return;
 		const change = s.pendingPublish || capture(s);
 		if (!mxUtils.isEmptyObject(change.patch))
 		{
@@ -118,17 +258,23 @@ Draw.loadPlugin(function(ui)
 			const op = await call('append', {patch: change.patch, parents: s.heads,
 				operationId: change.operationId, name: localStorage.getItem('.sharemapName') || s.name || ''}, s);
 			s.records.set(op.id, op);
-			s.heads = core.order([...s.records.values()], s.manifest.room).heads;
+			collectConflicts(s, op);
+			s.ordered = core.order([...s.records.values()], s.manifest.room);
+			s.heads = s.ordered.heads;
 			s.baseline = change.pages;
 			s.vars = change.vars;
 			s.pendingPublish = null;
+			s.needsSnapshot = true;
 		}
 	}
 	function materialize(s, ordered)
 	{
-		let merged = ui.getPagesForXml(s.manifest.base);
-		let mergedVars = mxUtils.parseXml(s.manifest.base).documentElement.getAttribute('vars');
-		for (const op of ordered.ready)
+		const previous = s.applied || [];
+		const tail = ordered.ready.slice(previous.length);
+		const incremental = previous.length && previous.every((id, index) => ordered.ready[index]?.id === id) && !tail.some(op => op.author === s.author);
+		let merged = incremental ? ui.clonePages(s.baseline) : ui.getPagesForXml(s.manifest.base);
+		let mergedVars = incremental ? s.vars : mxUtils.parseXml(s.manifest.base).documentElement.getAttribute('vars');
+		for (const op of incremental ? tail : ordered.ready)
 		{
 			merged = ui.patchPages(merged, op.patch, false, null, true, true, true);
 			if (op.patch.f && Object.prototype.hasOwnProperty.call(op.patch.f, 'vars'))
@@ -142,6 +288,7 @@ Draw.loadPlugin(function(ui)
 	{
 		if (session !== s || ui.getCurrentFile() !== s.file || !s.initialized) return;
 		if (s.running) return s.running;
+		s.lastCycle = Date.now();
 		s.running = (async () =>
 		{
 			try
@@ -151,14 +298,21 @@ Draw.loadPlugin(function(ui)
 				if (graph.isEditing() || graph.mouseDown) return;
 				await publish(s);
 				if (!active(s)) return;
-				const incoming = await call('scan', {}, s);
+				const response = await call('scan', {}, s);
+				const incoming = Array.isArray(response) ? response : response.records;
 				if (session !== s || ui.getCurrentFile() !== s.file) return;
-				for (const op of incoming) s.records.set(op.id, op);
+				let changed = false;
+				for (const op of incoming)
+				{
+					if (!s.records.has(op.id)) { changed = true; s.records.set(op.id, op); collectConflicts(s, op); }
+				}
+				if (changed) s.ordered = core.order([...s.records.values()], s.manifest.room);
+				if (active(s) && response.peers) updatePeople(s, response.peers);
 				if (graph.isEditing() || graph.mouseDown) return;
 				// Edits may have happened while disk IO was in flight.
 				await publish(s);
 				if (session !== s || ui.getCurrentFile() !== s.file || graph.isEditing() || graph.mouseDown || dirty(s)) return;
-				const ordered = core.order([...s.records.values()], s.manifest.room);
+				const ordered = s.ordered || core.order([...s.records.values()], s.manifest.room);
 				const signature = ordered.ready.map(op => op.id).join(',');
 				if (signature !== s.signature)
 				{
@@ -169,58 +323,49 @@ Draw.loadPlugin(function(ui)
 					s.vars = vars();
 					s.heads = ordered.heads;
 					s.signature = signature;
+					s.applied = ordered.ready.map(op => op.id);
+					s.needsSnapshot = true;
 				}
 				// Persist a conventional .drawio view for exports and readers. Its
-				// embedded heads prevent opening an incomplete OneDrive download.
+				// embedded heads prevent reopening an incomplete materialized view.
+				let xml = s.snapshot;
+				if (s.needsSnapshot)
+				{
 				const root = ui.getNodeForPages(s.baseline);
 				root.setAttribute('sharemap-room', s.manifest.room);
 				root.setAttribute('sharemap-heads', JSON.stringify(s.heads));
-				const xml = mxUtils.getXml(root);
+				xml = mxUtils.getXml(root);
 				if (s.snapshot !== xml)
 				{
 					if (await call('snapshot', {xml, heads: s.heads}, s)) s.snapshot = xml;
 				}
+				if (s.snapshot === xml) s.needsSnapshot = false;
+				}
 				if (!active(s)) return;
-				if (!dirty(s))
+				if (!dirty(s) && (s.file.isModified?.() || s.savedSignature !== signature || s.savedXml !== xml))
 				{
 					s.file.setModified(false);
 					s.file.setShadowPages(ui.clonePages(s.baseline), s.vars);
 					s.file.setData(xml);
 					ui.descriptorChanged();
 					ui.editor.setStatus('');
+					s.savedSignature = signature;
+					s.savedXml = xml;
 				}
 				const contributors = new Set(ordered.ready.map(op => op.author));
 				contributors.add(s.author);
 				savedStatus(s, ordered.pending);
 				status.title = ordered.ready.length + ' saved edits · ' + contributors.size + ' contributors. ' +
-					(s.transport === 'server' ? 'Connected directly to ' + s.server + '. ' : 'Check the OneDrive icon for cloud sync status. ') +
+					('Connected directly to ' + s.server + '. ') +
 					'Same-property edits use deterministic last-writer order; all edits remain in the journal.';
 				s.error = null;
-				if (!s.lastActivity || Date.now() - s.lastActivity > 10000)
-				{
-					s.lastActivity = Date.now();
-					try
-					{
-						const peers = await call('activity', {name: localStorage.getItem('.sharemapName') || s.name,
-							page: ui.currentPage && ui.currentPage.getId(), selection: graph.getSelectionCells().map(cell => cell.id)}, s);
-						if (active(s))
-						{
-							s.remotePeers = peers.filter(peer => peer.author !== s.author && (!peer.client || peer.client !== s.client)).length;
-							s.presenceError = null;
-							showPeople(peers, s);
-							savedStatus(s, ordered.pending);
-						}
-					}
-					catch (e)
-					{
-						s.presenceError = e;
-						if (active(s)) status.title += ' Editor presence failed: ' + e.message;
-					}
-				}
+				s.failures = 0;
 			}
 			catch (e)
 			{
 				s.error = e;
+				s.retryAt = Date.now() + Math.min(10000, 1000 * (2 ** Math.min(4, s.failures || 0)));
+				s.failures = (s.failures || 0) + 1;
 				if (active(s))
 				{
 					status.textContent = 'Sync paused · Retry';
@@ -236,17 +381,19 @@ Draw.loadPlugin(function(ui)
 		if (s.initializing) return s.initializing;
 		s.initializing = (async () =>
 		{
-		const records = await call('scan', {}, s);
+		const response = await call('scan', {}, s);
+		const records = Array.isArray(response) ? response : response.records;
 		if (session !== s || ui.getCurrentFile() !== s.file) return;
-		for (const op of records) s.records.set(op.id, op);
+		for (const op of records) { s.records.set(op.id, op); collectConflicts(s, op); }
 		const ordered = core.order(records, s.manifest.room);
+		s.ordered = ordered;
 		const required = JSON.parse(ui.fileNode.getAttribute('sharemap-heads') || '[]');
 		const savedRoom = ui.fileNode.getAttribute('sharemap-room');
 		if (savedRoom && savedRoom !== s.manifest.room) throw new Error('The map and collaboration folder belong to different shared sessions. Restore the matching folder.');
 		const available = new Set(ordered.ready.map(op => op.id));
 		if (!Array.isArray(required) || !required.every(id => available.has(id)) || ordered.pending)
 		{
-			throw new Error('Waiting for OneDrive to download all earlier edits. Keep the map and its .collab folder available on this device.');
+			throw new Error('Waiting for earlier server edits. Reconnect and retry.');
 		}
 		const merged = materialize(s, ordered);
 		ui.fileNode.removeAttribute('sharemap-room');
@@ -258,6 +405,8 @@ Draw.loadPlugin(function(ui)
 		s.vars = vars();
 		s.heads = ordered.heads;
 		s.signature = ordered.ready.map(op => op.id).join(',');
+		s.applied = ordered.ready.map(op => op.id);
+		s.needsSnapshot = true;
 		s.initialized = true;
 		autoSave.style.display = 'inline-block';
 		autoSave.disabled = false;
@@ -283,7 +432,7 @@ Draw.loadPlugin(function(ui)
 		}
 		if (s.error || !s.initialized || dirty(s)) throw s.error || new Error('Edits are still being saved. Retry.');
 	}
-	async function open(create = false)
+	async function open()
 	{
 		if (probeTask)
 		{
@@ -297,20 +446,20 @@ Draw.loadPlugin(function(ui)
 			}
 			try { await probeTask; }
 			catch (e) { if (ui.getCurrentFile() === pendingFile) throw e; }
-			if (ui.getCurrentFile() !== pendingFile || (create && !session)) return open(create);
+			if (ui.getCurrentFile() !== pendingFile || !session) return open();
 			return session;
 		}
 		const file = ui.getCurrentFile();
 		if (!file || !file.fileObject || !/\.drawio$/i.test(file.fileObject.path) || !file.isEditable())
 		{
-			if (create) throw new Error('Save this map as a .drawio file in your OneDrive-synced SharePoint folder first.');
 			if (session && (session.file !== file || !file.isEditable()))
 			{
 				await call('close', {}, session);
 				session = null;
+				reviewButton.style.display = 'none';
 				showPeople([], {});
 				autoSave.style.display = 'none';
-				status.textContent = 'Save to OneDrive to collaborate';
+				status.textContent = 'Open a shared map to collaborate';
 			}
 			return;
 		}
@@ -324,7 +473,7 @@ Draw.loadPlugin(function(ui)
 		{
 			try
 			{
-				const info = await call('open', {path: file.fileObject.path, seed: ui.getFileData(true), base: create ? ui.getFileData(true) : undefined}, null);
+				const info = await call('open', {path: file.fileObject.path}, null);
 				if (file !== ui.getCurrentFile())
 				{
 					if (info) await call('close', {}, info);
@@ -332,24 +481,20 @@ Draw.loadPlugin(function(ui)
 				}
 				if (session) await call('close', {}, session);
 				session = null;
+				reviewButton.style.display = 'none';
 				showPeople([], {});
 				if (info)
 				{
+					if (info.mapName) { file.fileObject.name = info.mapName; file.title = info.mapName; ui.descriptorChanged(); }
 					session = Object.assign(info, {file, path: file.fileObject.path, records: new Map(), heads: [], initialized: false});
 					await initialize(session);
-				}
-				else if (ui.fileNode && ui.fileNode.getAttribute('sharemap-room'))
-				{
-					// Fail closed: never silently treat a collaborative snapshot as
-					// an ordinary file when its journal hasn't downloaded yet.
-					throw new Error('The .collab folder is missing. Download it beside the map before editing.');
 				}
 				else
 				{
 					file.shareMapGuard = false;
 					ui.setGraphEnabled(file.isEditable());
 					autoSave.style.display = 'none';
-					status.textContent = 'Save to OneDrive to collaborate';
+					status.textContent = 'Open a shared map to collaborate';
 				}
 				return session;
 			}
@@ -361,59 +506,6 @@ Draw.loadPlugin(function(ui)
 			}
 		})();
 		return probeTask;
-	}
-	function dialog()
-	{
-		const div = document.createElement('div');
-		div.style.cssText = 'padding:20px;font:14px Arial;line-height:1.5';
-		const title = document.createElement('h2');
-		title.textContent = 'SharePoint collaboration';
-		div.appendChild(title);
-		const text = document.createElement('p');
-		text.textContent = 'Keep the map and its .collab folder together in your synced SharePoint folder. Everyone edits with drawio-desktop-sync. Changes merge when OneDrive syncs; there is no additional server. Mark both items “Always keep on this device”.';
-		div.appendChild(text);
-		const nameLabel = document.createElement('label');
-		nameLabel.textContent = 'Your name';
-		const name = document.createElement('input');
-		name.value = localStorage.getItem('.sharemapName') || '';
-		name.placeholder = 'Name shown with your edits';
-		name.style.cssText = 'display:block;width:100%;box-sizing:border-box;margin:4px 0 12px;padding:8px';
-		nameLabel.appendChild(name);
-		div.appendChild(nameLabel);
-		const linkLabel = document.createElement('label');
-		linkLabel.textContent = 'SharePoint folder link (optional)';
-		const link = document.createElement('input');
-		link.placeholder = 'Paste the folder link from OneDrive → Share → Copy link';
-		link.style.cssText = name.style.cssText;
-		linkLabel.appendChild(link);
-		div.appendChild(linkLabel);
-		if (session) call('link').then(value => { link.value = value; }).catch(showError);
-		const note = document.createElement('p');
-		note.textContent = 'Share the containing folder with Edit access so collaborators receive the edit journal too. SharePoint controls access; this app does not grant permissions. Initialize once, let OneDrive finish, then invite others. Two edits to the same property use a consistent last-writer order.';
-		note.style.fontSize = '12px';
-		div.appendChild(note);
-		const controls = document.createElement('div');
-		controls.style.cssText = 'display:flex;gap:8px;justify-content:flex-end';
-		div.appendChild(controls);
-		button('Show in OneDrive folder', async () =>
-		{
-			if (!session) await open(true);
-			if (session) await call('reveal');
-		}, controls);
-		button(session ? 'Save / Copy link' : 'Enable AutoSave & merging', async () =>
-		{
-			localStorage.setItem('.sharemapName', name.value.trim().slice(0, 80));
-			if (!session) await open(true);
-			if (session && link.value.trim())
-			{
-				await call('link', {url: link.value.trim()});
-				await call('copyLink');
-				status.textContent = 'SharePoint folder link copied';
-			}
-			ui.hideDialog();
-		}, controls);
-		button('Close', () => ui.hideDialog(), controls);
-		ui.showDialog(div, 570, 400, true, true);
 	}
 	function editorDiagnostics(s)
 	{
@@ -453,14 +545,6 @@ Draw.loadPlugin(function(ui)
 		ui.showDialog(div, 680, 460, true, true);
 		savedStatus(s, false);
 	}
-	async function shareFolder(action)
-	{
-		const result = await call(action);
-		if (result && result.web)
-		{
-			ui.editor.setStatus('SharePoint folder opened. Use Share or Manage access there.');
-		}
-	}
 	async function serverOpen(invite)
 	{
 		const info = await call('serverJoin', {invite}, null);
@@ -483,6 +567,20 @@ Draw.loadPlugin(function(ui)
 		button('Open', async () => { await serverOpen(input.value.trim()); ui.hideDialog(); }, div);
 		button('Cancel', () => ui.hideDialog(), div);
 		ui.showDialog(div, 520, 260, true, true);
+	}
+	function nameDialog()
+	{
+		const div = document.createElement('div');
+		div.style.cssText = 'padding:20px;font:14px Arial';
+		const label = document.createElement('label'); label.textContent = 'Your display name'; div.appendChild(label);
+		const input = document.createElement('input');
+		input.value = localStorage.getItem('.sharemapName') || session?.name || '';
+		input.maxLength = 80;
+		input.style.cssText = 'display:block;width:100%;box-sizing:border-box;padding:8px;margin:10px 0';
+		label.appendChild(input);
+		button('Save', () => { localStorage.setItem('.sharemapName', input.value.trim().slice(0, 80)); if (session) { session.lastActivity = 0; updateActivity(session); } ui.hideDialog(); }, div);
+		button('Cancel', () => ui.hideDialog(), div);
+		ui.showDialog(div, 380, 150, true, true);
 	}
 	async function serverCreate()
 	{
@@ -511,14 +609,7 @@ Draw.loadPlugin(function(ui)
 		note.textContent = 'People with the link can edit this map while connected to your network or VPN. They install drawio-desktop-sync and use … → Open shared map. Keep the link within your team.';
 		div.appendChild(note);
 		button('Copy shared-map link', async () => { await call('copyLink', {}, s); status.textContent = 'Shared-map link copied'; ui.hideDialog(); }, div);
-		if (s.owner) button('Revoke existing links', () =>
-		{
-			ui.confirm('Revoke all existing shared-map links? Colleagues will need a new link to reconnect.', async () =>
-			{
-				try { await call('rotateLink', {}, s); ui.hideDialog(); status.textContent = 'Links revoked · Share to copy a new link'; }
-				catch (error) { showError(error); }
-			});
-		}, div);
+		if (s.owner) button('Revoke existing links', async () => { await call('rotateLink', {}, s); ui.hideDialog(); status.textContent = 'Links revoked'; }, div);
 		button('Close', () => ui.hideDialog(), div);
 		ui.showDialog(div, 540, 260, true, true);
 	}
@@ -535,14 +626,9 @@ Draw.loadPlugin(function(ui)
 	});
 		autoSave.style.display = 'none';
 	autoSave.style.cssText += ';border:1px solid #8886;border-radius:14px;padding:5px 10px;white-space:nowrap';
-	autoSave.title = 'Automatically save your edits and merge changes delivered by OneDrive';
+	autoSave.title = 'Automatically save your edits and merge changes from the server';
 	bar.insertBefore(autoSave, status);
-	const share = button('Share', async () =>
-	{
-		if (session?.transport === 'server') serverAccess();
-		else if (session && session.cloud) await shareFolder('shareNative');
-		else dialog();
-	});
+	const share = button('Share', async () => { if (session) serverAccess(); else await serverCreate(); });
 	share.style.cssText += ';background:#107c41;color:#fff;border:0;border-radius:5px;padding:6px 18px;font-weight:600';
 	share.title = 'Share this map';
 	button('⋯', () =>
@@ -550,24 +636,19 @@ Draw.loadPlugin(function(ui)
 		const div = document.createElement('div');
 		div.style.cssText = 'padding:20px;display:flex;flex-direction:column;gap:12px';
 		button('Open shared map', () => { ui.hideDialog(); serverJoinDialog(); }, div);
-		button('Move current map to server', () => { ui.hideDialog(); return serverCreate(); }, div);
+		button('Your display name', () => { ui.hideDialog(); nameDialog(); }, div);
+		button('Share current map on server', () => { ui.hideDialog(); return serverCreate(); }, div);
 		button('Copy link for people with access', async () =>
 		{
-			if (!session) throw new Error('Save the map in a OneDrive-synced folder first.');
+			if (!session) throw new Error('Open a shared map first.');
 			await call('copyLink');
 			ui.hideDialog();
 			status.textContent = 'Link copied';
 		}, div);
-		button('Manage access', async () =>
-		{
-			if (!session) throw new Error('Save the map in a OneDrive-synced folder first.');
-			if (session.transport === 'server') { ui.hideDialog(); serverAccess(); return; }
-			await shareFolder('manageAccess');
-			ui.hideDialog();
-		}, div);
+		button('Manage access', () => { if (!session) throw new Error('Open a shared map first.'); ui.hideDialog(); serverAccess(); }, div);
+		button('Create desktop shortcut', async () => { await call('shortcut'); ui.hideDialog(); }, div);
 		button('Sync diagnostics', () => { ui.hideDialog(); return diagnostics(); }, div);
-		button('Collaboration details', () => { ui.hideDialog(); dialog(); }, div);
-		ui.showDialog(div, 310, 300, true, true);
+		ui.showDialog(div, 310, 340, true, true);
 	});
 	status.style.cursor = 'pointer';
 	status.addEventListener('click', () =>
@@ -615,6 +696,7 @@ Draw.loadPlugin(function(ui)
 					await call('close', {}, s);
 					if (!active(s)) throw new Error('The document changed while saving a copy. Retry.');
 					session = null;
+					reviewButton.style.display = 'none';
 					showPeople([], {});
 					autoSave.style.display = 'none';
 					this.shareMapGuard = false;
@@ -637,7 +719,7 @@ Draw.loadPlugin(function(ui)
 	const originalChange = ui.handleFileChange;
 	ui.handleFileChange = function(curr, prev, file)
 	{
-		if (session && session.file === file) { session.snapshot = null; return; }
+		if (session && session.file === file) { session.snapshot = null; session.needsSnapshot = true; return; }
 		if (file === probing) return;
 		return originalChange.apply(this, arguments);
 	};
@@ -665,16 +747,30 @@ Draw.loadPlugin(function(ui)
 	{
 		if (session && session.file === ui.getCurrentFile())
 		{
-			if (session.initialized && !session.paused) cycle(session);
-			else if (!session.initialized) initialize(session).catch(e => { status.textContent = 'Waiting for OneDrive · Click for details'; status.title = e.message; });
+			if (session.initialized)
+			{
+				updateActivity(session);
+				if (session.lastPeers) showPeople(session.lastPeers, session);
+				if (!session.paused && Date.now() >= (session.retryAt || 0) && Date.now() - (session.lastCycle || 0) >= 1000) cycle(session);
+			}
+			else if (!session.initialized) initialize(session).catch(e => { status.textContent = 'Connecting to server · Click for details'; status.title = e.message; });
 		}
 		else if (!probeTask && ui.getCurrentFile()?.shareMapGuard && Date.now() >= probeRetryAt)
 		{
-			open().catch(e => { status.textContent = 'Waiting for OneDrive · Click for details'; status.title = e.message; });
+			open().catch(e => { status.textContent = 'Connecting to server · Click for details'; status.title = e.message; });
 		}
-	}, 1000);
+	}, 500);
 	window.addEventListener('unload', () => clearInterval(timer));
+	let changeTimer;
+	if (graph.model?.addListener) graph.model.addListener(mxEvent.CHANGE, () =>
+	{
+		const s = session;
+		if (!s || !active(s) || !s.initialized) return;
+		s.modelRevision = (s.modelRevision || 0) + 1;
+		window.clearTimeout(changeTimer);
+		changeTimer = window.setTimeout(() => { if (active(s) && !s.paused && Date.now() >= (s.retryAt || 0)) cycle(s); }, 150);
+	});
 	// Exposed on the existing UI object for integration tests and diagnostics.
-	ui.sharedFolder = {open, cycle: () => session && cycle(session), getSession: () => session, dialog, diagnostics, serverOpen, serverCreate};
+	ui.sharedFolder = {open, reviewConflicts, resolveConflict, cycle: () => session && cycle(session), getSession: () => session, diagnostics, serverOpen, serverCreate};
 	open().catch(showError);
 });

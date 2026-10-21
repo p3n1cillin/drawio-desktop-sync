@@ -1,8 +1,11 @@
 # Server collaboration
 
-The server is the authoritative diagram and journal store. Desktop clients poll it
-directly every second, merge concurrent changes using the existing deterministic
-draw.io patch journal, and publish editor presence every ten seconds. The service
+The server is the authoritative diagram and journal store. Clients receive
+incremental updates every second and publish local changes shortly after editing.
+Idle sync does not clone or serialize diagrams. The server caches rooms and edit
+history, and expires unused rooms after five minutes. Selection and editing
+changes are published promptly; a ten-second heartbeat keeps users visible even
+during long label edits. The service
 does not use OneDrive or Microsoft Graph. Clients need network/VPN access to it.
 
 Run `src/server/server.js` with Node 24 LTS. There are no server npm dependencies.
@@ -33,10 +36,12 @@ directory (`%APPDATA%/drawio-desktop-sync` on Windows):
 {"server":"https://diagrams.example.test:9443","ca":"-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----\n","adminToken":"YOUR-PRIVATE-ADMIN-TOKEN"}
 ```
 
-Open a diagram and choose **… → Move current map to server**. The native desktop
+Open a diagram and choose **Share**. The native desktop
 confirmation identifies the destination before uploading. The original file is
 retained. The new server map opens from a separate local launch cache, and recent
-files reopen the server session automatically. AutoSave says **Saved to server**.
+files reopen the server session automatically. A desktop shortcut is created;
+it identifies the room and restores a missing launch cache automatically.
+AutoSave says **Saved to server**.
 
 Use **Share → Copy shared-map link**. A colleague installs the same release and
 chooses **… → Open shared map**, then pastes the link. No server administrator
@@ -57,14 +62,24 @@ using the same operation ID. Edits and snapshots are written durably before the
 server acknowledges them. If disconnected, the editor shows **Sync paused** and
 preserves its modified state; reconnect before closing to save later local edits.
 This preview does not provide a complete offline editor or Microsoft's Excel
-coauthoring protocol. Same-property conflicts use the journal's deterministic
-Lamport/ID order; all accepted operations remain in the history.
+coauthoring protocol. Different properties merge automatically. Concurrent edits
+to one property produce a review notification with both versions; users can keep
+the current value or publish the earlier value as a new edit. The journal uses
+deterministic Lamport/ID ordering and preserves all accepted operations.
 
 Keep the old file and any old `.collab` folders as migration backups until users
 have checked their diagrams. The server does not import or silently reconcile
 conflicting old OneDrive rooms. File exports and Save As produce standalone copies.
 
-Run `npm test`, `npm run test:server-ui`, and `npm run test:shared-ui` to validate
-the server, desktop integration, and compatibility with existing folder sessions.
+Run `npm test` and `npm run test:server-ui` to validate the server and desktop,
+including missing-cache recovery, idle work, live editing and conflict recovery.
 The PEM fixtures under `src/test/fixtures/sync-tls` are public test credentials;
 they are never used by the deployed service or included in the Windows package.
+
+## Limits
+
+Shared bases and materialized diagrams are limited to 16 MiB; an operation is
+limited to 4 MiB and a room to 10,000 operations. Save an archive and create a new
+shared map before reaching the history limit. Stored data and TLS keys belong in
+your normal server backup policy. Desktop 32.5.6 clients remain compatible with
+the service, but need updating for incremental sync and the review UI.

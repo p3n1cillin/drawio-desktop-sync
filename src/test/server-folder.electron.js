@@ -12,6 +12,8 @@ const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'drawio-server-ui-'));
 const userData = path.join(directory, 'profile');
 app.commandLine.appendSwitch('user-data-dir', userData);
 app.setPath('userData', userData);
+// Keep teardown asynchronous without hiding failures behind window-all-closed.
+app.on('will-quit', event => event.preventDefault());
 const cert = await fs.readFile(new URL('./fixtures/sync-tls/cert.pem', import.meta.url));
 const key = await fs.readFile(new URL('./fixtures/sync-tls/key.pem', import.meta.url));
 const adminToken = randomUUID() + randomUUID();
@@ -23,8 +25,12 @@ await fs.mkdir(userData, {recursive: true});
 await fs.writeFile(manager.setupPath, JSON.stringify(setup));
 const xml = '<mxfile><diagram id="page" name="Test"><mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/><mxCell id="desk" value="Desk" vertex="1" parent="1"><mxGeometry x="80" y="80" width="120" height="60" as="geometry"/></mxCell></root></mxGraphModel></diagram></mxfile>';
 const filename = await manager.create({xml, name: 'Server test.drawio'});
+const roomId = path.basename(path.dirname(filename));
 const remoteFile = path.join(path.dirname(filename), 'Peer.drawio');
 await fs.copyFile(filename, remoteFile);
+const copyFile = path.join(directory, 'Standalone copy.drawio');
+await fs.writeFile(copyFile, xml);
+await fs.unlink(filename);
 const peerClient = randomUUID();
 const originalOpen = ServerFolder.prototype.open;
 ServerFolder.prototype.open = function(...args)
@@ -32,7 +38,7 @@ ServerFolder.prototype.open = function(...args)
 	if (this.filename === remoteFile) this.client = peerClient;
 	return originalOpen.apply(this, args);
 };
-process.argv = [process.argv[0], process.argv[1], filename, remoteFile];
+process.argv = [process.argv[0], process.argv[1], '--shared-map=' + roomId, remoteFile, copyFile];
 app.on('browser-window-created', (_event, win) => { win.hide(); });
 async function until(fn, label, timeout = 25000)
 {
@@ -55,7 +61,7 @@ async function attach(win)
 }
 async function runTests()
 {
-const watchdog = setTimeout(() => app.exit(1), 110000);
+const watchdog = setTimeout(() => app.exit(1), 170000);
 let result = 1;
 try
 {
@@ -63,6 +69,8 @@ try
 	const first = await until(() => BrowserWindow.getAllWindows()[0], 'first window');
 	const a = await attach(first);
 	await until(() => a('!!testUi.sharedFolder.getSession()?.initialized'), 'first server session');
+	assert.equal(await fs.stat(filename).then(() => true), true);
+	console.log('PASS: room-based shortcut restores a deleted launch cache before the file loader runs');
 	await a('electron.sendMessage("newfile", {}); true');
 	const second = await until(() => BrowserWindow.getAllWindows().find(win => win.id !== first.id), 'second window');
 	const b = await attach(second);
@@ -100,8 +108,9 @@ try
 	const records = await folder.scan();
 	assert.equal(records.filter(op => JSON.stringify(op.patch).includes('Retry letter')).length, 1);
 	console.log('PASS: lost acknowledgement retries once and preserves newer typing');
+	const previousSession = await a('testUi.sharedFolder.getSession().id');
 	await a('testUi.getCurrentFile().setModified(false); testUi.loadArgs({args:[' + JSON.stringify(filename) + ']}); true');
-	await until(() => a('testUi.sharedFolder.getSession()?.initialized && testUi.editor.graph.model.getCell("desk").value === "Latest letter"'), 'reopen server state');
+	await until(() => a('testUi.sharedFolder.getSession()?.initialized && testUi.sharedFolder.getSession().id !== ' + JSON.stringify(previousSession) + ' && testUi.editor.graph.model.getCell("desk").value === "Latest letter"'), 'reopen server state');
 	const raw = await fs.readFile(filename, 'utf8');
 	assert.equal(raw.includes('Latest letter'), false);
 	assert.equal(await fs.stat(filename + '.collab').then(() => true).catch(() => false), false);
@@ -110,9 +119,55 @@ try
 	console.log('PASS: server presence includes the separate peer installation');
 	assert.equal(await a('document.body.innerText.includes("Saved to server")'), true);
 	console.log('PASS: desktop header reports Saved to server');
+	await a('testUi.sharedFolder.cycle().then(()=>true)');
+	const idle = await a('(async()=>{let clones=0,serializations=0;const clone=testUi.clonePages,serialize=testUi.getNodeForPages;testUi.clonePages=function(){clones++;return clone.apply(this,arguments)};testUi.getNodeForPages=function(){serializations++;return serialize.apply(this,arguments)};try{for(let i=0;i<5;i++)await testUi.sharedFolder.cycle();return {clones,serializations}}finally{testUi.clonePages=clone;testUi.getNodeForPages=serialize}})()');
+	assert.deepEqual(idle, {clones: 0, serializations: 0});
+	console.log('PASS: five idle sync cycles do not clone pages or serialize the diagram');
+	await a('localStorage.removeItem(".sharemapName");testUi.sharedFolder.getSession().name="Alice";testUi.sharedFolder.getSession().lastActivity=0;testUi.editor.graph.setSelectionCell(testUi.editor.graph.model.getCell("desk"));testUi.editor.graph.startEditingAtCell(testUi.editor.graph.model.getCell("desk"));true');
+	await b('testUi.sharedFolder.getSession().name="Bob";testUi.sharedFolder.getSession().lastActivity=0;testUi.editor.graph.setSelectionCell(testUi.editor.graph.model.getCell("desk"));true');
+	await until(() => b('document.querySelector(".geSyncEditingNote")?.textContent.includes("Alice is editing")'), 'editing indicator');
+	assert.equal(await b('[...document.querySelectorAll(".geSyncPresenceLabel")].some(node=>node.textContent.includes("Alice")&&node.textContent.includes("editing"))'), true);
+	if (process.env.DRAWIO_UI_SCREENSHOT) await fs.writeFile(process.env.DRAWIO_UI_SCREENSHOT, (await second.webContents.capturePage()).toPNG());
+	await a('testUi.editor.graph.stopEditing(true);true');
+	console.log('PASS: a held label edit shows the editor name on the object and warns the other editor');
+	await Promise.all([a('testUi.sharedFolder.cycle().then(()=>true)'), b('testUi.sharedFolder.cycle().then(()=>true)')]);
+	const pause = '[...document.querySelectorAll("button")].find(button=>button.textContent.startsWith("AutoSave")).click();true';
+	await Promise.all([a(pause), b(pause)]);
+	await Promise.all([a('testUi.editor.graph.model.setValue(testUi.editor.graph.model.getCell("desk"),"Alice overlap");true'), b('testUi.editor.graph.model.setValue(testUi.editor.graph.model.getCell("desk"),"Bob overlap");true')]);
+	await Promise.all([a('testUi.sharedFolder.cycle().then(()=>true)'), b('testUi.sharedFolder.cycle().then(()=>true)')]);
+	await Promise.all([a(pause), b(pause)]);
+	await until(async () => await a('!!testUi.sharedFolder.getSession().conflicts?.size') && await b('!!testUi.sharedFolder.getSession().conflicts?.size'), 'overlap review on both clients');
+	await a('(()=>{const s=testUi.sharedFolder.getSession();const key=[...s.conflicts.keys()].at(-1);return testUi.sharedFolder.resolveConflict(key,true)})().then(()=>true)');
+	await until(async () => await a('testUi.editor.graph.model.getCell("desk").value') === await b('testUi.editor.graph.model.getCell("desk").value'), 'restored overlapping value');
+	console.log('PASS: concurrent text edits create reviewable conflicts and restoring an earlier value reaches both editors');
+	await a(pause);
+	const before = await b('testUi.editor.graph.model.getCell("desk").value');
+	await a('testUi.editor.graph.model.setValue(testUi.editor.graph.model.getCell("desk"),"Manual save while paused");true');
+	await new Promise(resolve => setTimeout(resolve, 1300));
+	assert.equal(await b('testUi.editor.graph.model.getCell("desk").value'), before);
+	await a('new Promise((resolve,reject)=>testUi.getCurrentFile().save(false,resolve,reject)).then(()=>true)');
+	await until(() => b('testUi.editor.graph.model.getCell("desk").value === "Manual save while paused"'), 'manual save with AutoSave off');
+	await a(pause);
+	console.log('PASS: AutoSave off preserves local changes and Ctrl+S still publishes');
+	await a('testUi.editor.graph.model.setValue(testUi.editor.graph.model.getCell("peer"),"Undo this");true');
+	await until(() => b('testUi.editor.graph.model.getCell("peer").value === "Undo this"'), 'before undo');
+	await a('testUi.editor.undoManager.undo();true');
+	await until(() => b('testUi.editor.graph.model.getCell("peer").value === "Peer desk"'), 'server undo');
+	console.log('PASS: undo after incoming server patches propagates');
+	await a('(()=>{const file=testUi.getCurrentFile();file.fileObject={path:' + JSON.stringify(copyFile) + ',name:"Standalone copy.drawio",type:"utf-8"};file.title="Standalone copy.drawio";return new Promise((resolve,reject)=>file.save(false,resolve,reject,null,true))})().then(()=>true)');
+	await until(() => a('!testUi.sharedFolder.getSession() && testUi.editor.graph.isEnabled()'), 'ordinary Save As');
+	assert.doesNotMatch(await fs.readFile(copyFile, 'utf8'), /sharemap-room=/);
+	console.log('PASS: Save As produces an independent ordinary diagram and leaves server mode');
 	result = 0;
 }
-catch (error) { console.error(error.stack); }
+catch (error)
+{
+	console.error(error.stack);
+	for (const win of BrowserWindow.getAllWindows())
+	{
+		try { console.error(await win.webContents.executeJavaScript('JSON.stringify({editing:testUi.editor.graph.isEditing(),editingCell:testUi.editor.graph.cellEditor?.editingCell?.id,peers:testUi.sharedFolder.getSession()?.lastPeers,note:document.querySelector(".geSyncEditingNote")?.textContent,error:testUi.sharedFolder.getSession()?.error?.message})')); } catch {}
+	}
+}
 finally
 {
 	clearTimeout(watchdog);

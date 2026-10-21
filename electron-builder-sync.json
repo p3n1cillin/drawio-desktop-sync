@@ -29,6 +29,8 @@
     "!**/*.map",
     "!dist{,/**}",
     "!src/test{,/**}",
+    "!src/server{,/**}",
+    "!build{,/**}",
     "!build/test-sync-installer.ps1",
     "!doc{,/**}",
     "!drawio/.git{,/**}"
