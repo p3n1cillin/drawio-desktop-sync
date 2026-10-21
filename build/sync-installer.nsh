@@ -18,24 +18,24 @@
   WriteRegStr HKCU "Software\Classes\.drawio" "" "${SYNC_CLASS}"
   WriteRegNone HKCU "Software\Classes\.drawio\OpenWithProgids" "${SYNC_CLASS}"
   WriteRegStr HKCU "Software\Classes\${SYNC_CLASS}" "" "drawio-desktop-sync Diagram"
-  WriteRegStr HKCU "Software\Classes\${SYNC_CLASS}\DefaultIcon" "" '$"$INSTDIR\${APP_EXECUTABLE_FILENAME}$",0'
+  WriteRegStr HKCU "Software\Classes\${SYNC_CLASS}\DefaultIcon" "" '$\"$INSTDIR\${APP_EXECUTABLE_FILENAME}$\",0'
   WriteRegStr HKCU "Software\Classes\${SYNC_CLASS}\shell\open" "" "Open with drawio-desktop-sync"
-  WriteRegStr HKCU "Software\Classes\${SYNC_CLASS}\shell\open\command" "" '$"$INSTDIR\${APP_EXECUTABLE_FILENAME}$" $"%1$"'
+  WriteRegStr HKCU "Software\Classes\${SYNC_CLASS}\shell\open\command" "" '$\"$INSTDIR\${APP_EXECUTABLE_FILENAME}$\" $\"%1$\"'
 
   WriteRegStr HKCU "Software\Classes\Applications\${APP_EXECUTABLE_FILENAME}" "FriendlyAppName" "drawio-desktop-sync"
-  WriteRegStr HKCU "Software\Classes\Applications\${APP_EXECUTABLE_FILENAME}\shell\open\command" "" '$"$INSTDIR\${APP_EXECUTABLE_FILENAME}$" $"%1$"'
+  WriteRegStr HKCU "Software\Classes\Applications\${APP_EXECUTABLE_FILENAME}\shell\open\command" "" '$\"$INSTDIR\${APP_EXECUTABLE_FILENAME}$\" $\"%1$\"'
   WriteRegStr HKCU "Software\Classes\Applications\${APP_EXECUTABLE_FILENAME}\SupportedTypes" ".drawio" ""
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\App Paths\${APP_EXECUTABLE_FILENAME}" "" "$INSTDIR\${APP_EXECUTABLE_FILENAME}"
 
   WriteRegStr HKCU "${SYNC_KEY}\Capabilities" "ApplicationName" "drawio-desktop-sync"
   WriteRegStr HKCU "${SYNC_KEY}\Capabilities" "ApplicationDescription" "Edit draw.io diagrams with OneDrive and SharePoint collaboration"
-  WriteRegStr HKCU "${SYNC_KEY}\Capabilities" "ApplicationIcon" '$"$INSTDIR\${APP_EXECUTABLE_FILENAME}$",0'
+  WriteRegStr HKCU "${SYNC_KEY}\Capabilities" "ApplicationIcon" '$\"$INSTDIR\${APP_EXECUTABLE_FILENAME}$\",0'
   WriteRegStr HKCU "${SYNC_KEY}\Capabilities\FileAssociations" ".drawio" "${SYNC_CLASS}"
   WriteRegStr HKCU "Software\RegisteredApplications" "drawio-desktop-sync" "${SYNC_KEY}\Capabilities"
 
   WriteRegStr HKCU "Software\Classes\SystemFileAssociations\.drawio\shell\drawio-desktop-sync" "" "Open with drawio-desktop-sync"
-  WriteRegStr HKCU "Software\Classes\SystemFileAssociations\.drawio\shell\drawio-desktop-sync" "Icon" '$"$INSTDIR\${APP_EXECUTABLE_FILENAME}$",0'
-  WriteRegStr HKCU "Software\Classes\SystemFileAssociations\.drawio\shell\drawio-desktop-sync\command" "" '$"$INSTDIR\${APP_EXECUTABLE_FILENAME}$" $"%1$"'
+  WriteRegStr HKCU "Software\Classes\SystemFileAssociations\.drawio\shell\drawio-desktop-sync" "Icon" '$\"$INSTDIR\${APP_EXECUTABLE_FILENAME}$\",0'
+  WriteRegStr HKCU "Software\Classes\SystemFileAssociations\.drawio\shell\drawio-desktop-sync\command" "" '$\"$INSTDIR\${APP_EXECUTABLE_FILENAME}$\" $\"%1$\"'
   System::Call 'shell32::SHChangeNotify(i, i, i, i) v (0x08000000, 0, 0, 0)'
 !macroend
 
