@@ -6,16 +6,26 @@ import {constants} from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import assert from 'node:assert/strict';
+import {SharedFolder} from '../main/shared-folder.js';
 
 const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'sharemap-ui-'));
 const filename = path.join(directory, 'test-map.drawio');
 const remoteFile = path.join(directory, 'remote', 'test-map.drawio');
+const probeA = path.join(directory, 'probe-a.drawio');
+const probeB = path.join(directory, 'probe-b.drawio');
+const copyFile = path.join(directory, 'copy.drawio');
 const xml = '<mxfile><diagram id="page" name="Test map"><mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/><mxCell id="desk" value="Desk" vertex="1" parent="1" style="rounded=1;fillColor=#dae8fc;strokeColor=#6c8ebf;"><mxGeometry x="80" y="80" width="120" height="60" as="geometry"/></mxCell></root></mxGraphModel></diagram></mxfile>';
 await fs.writeFile(filename, xml);
 await fs.mkdir(path.dirname(remoteFile));
 await fs.writeFile(remoteFile, xml);
+await fs.writeFile(copyFile, xml);
+for (const file of [probeA, probeB])
+{
+	await fs.writeFile(file, xml);
+	await new SharedFolder(file).open(xml);
+}
 app.commandLine.appendSwitch('user-data-dir', path.join(directory, 'profile'));
-process.argv = [process.argv[0], process.argv[1], filename, remoteFile];
+process.argv = [process.argv[0], process.argv[1], filename, remoteFile, probeA, probeB, copyFile];
 app.on('browser-window-created', (_event, win) =>
 {
 	win.hide();
@@ -161,6 +171,71 @@ try
 	await b('testUi.loadArgs({args:[' + JSON.stringify(remoteFile) + ']}); true');
 	await until(async () => await b('!!(testUi.sharedFolder.getSession() && testUi.sharedFolder.getSession().initialized)') && await b(both), 'reopen recovery');
 	console.log('PASS: reopening restores all collaborators from the journal');
+
+	// Deliberately delay filesystem operations while changing the document.
+	// This exercises the production IPC bridge and actual fileLoaded events.
+	const originalOpen = SharedFolder.prototype.open;
+	let releaseOpen;
+	let openEntered = false;
+	SharedFolder.prototype.open = async function(...args)
+	{
+		if (this.filename === probeA)
+		{
+			openEntered = true;
+			await new Promise(resolve => { releaseOpen = resolve; });
+		}
+		return originalOpen.apply(this, args);
+	};
+	try
+	{
+		await a('testUi.loadArgs({args:[' + JSON.stringify(probeA) + ']}); true');
+		await until(() => openEntered, 'delayed document probe');
+		await a('testUi.loadArgs({args:[' + JSON.stringify(probeB) + ']}); true');
+		await until(() => a('testUi.getCurrentFile().fileObject.path === ' + JSON.stringify(probeB) + ' && testUi.getCurrentFile().shareMapGuard'), 'new document guarded during old probe');
+		releaseOpen();
+		await until(() => a('!!(testUi.sharedFolder.getSession()?.initialized && testUi.sharedFolder.getSession().path === ' + JSON.stringify(probeB) + ')'), 'new document joined after old probe');
+		assert.equal(await a('testUi.editor.graph.isEnabled()'), true);
+	}
+	finally { SharedFolder.prototype.open = originalOpen; releaseOpen?.(); }
+	console.log('PASS: rapid document switches join the new journal after delayed opening');
+
+	const originalSnapshot = SharedFolder.prototype.snapshot;
+	let releaseSnapshot;
+	let snapshotEntered = false;
+	SharedFolder.prototype.snapshot = async function(...args)
+	{
+		if (this.filename === probeB)
+		{
+			snapshotEntered = true;
+			await new Promise(resolve => { releaseSnapshot = resolve; });
+		}
+		return originalSnapshot.apply(this, args);
+	};
+	try
+	{
+		await a('testUi.editor.graph.model.setValue(testUi.editor.graph.model.getCell("desk"), "Delayed save"); window.switchSave = new Promise(resolve => testUi.getCurrentFile().save(false, () => resolve("saved"), e => resolve(e.message))); true');
+		await until(() => snapshotEntered, 'delayed snapshot');
+		await a('testUi.getCurrentFile().setModified(false); testUi.loadArgs({args:[' + JSON.stringify(filename) + ']}); true');
+		await until(() => a('testUi.getCurrentFile().fileObject.path === ' + JSON.stringify(filename)), 'switch during save');
+		releaseSnapshot();
+		assert.match(await a('window.switchSave'), /document changed/);
+		await until(() => a('!!(testUi.sharedFolder.getSession()?.initialized && testUi.sharedFolder.getSession().path === ' + JSON.stringify(filename) + ')'), 'rejoin original journal');
+		assert.equal(await a('testUi.editor.graph.model.getCell("desk").value === "Delayed save"'), false);
+		assert.equal(await a('testUi.editor.graph.isEnabled()'), true);
+	}
+	finally { SharedFolder.prototype.snapshot = originalSnapshot; releaseSnapshot?.(); }
+	console.log('PASS: delayed Save cannot modify another document after switching');
+	// Use the path change made by the real Save As dialog, without opening an
+	// interactive picker. The destination is an authorized synthetic file.
+	await a('(()=>{const f=testUi.getCurrentFile(); f.fileObject={path:' + JSON.stringify(copyFile) + ',name:"copy.drawio",type:"utf-8"}; f.title="copy.drawio"; return new Promise((resolve,reject)=>f.save(false,resolve,reject,null,true));})().then(()=>true)');
+	await until(() => a('!testUi.sharedFolder.getSession() && testUi.editor.graph.isEnabled()'), 'standalone copy saved');
+	const copy = await fs.readFile(copyFile, 'utf8');
+	assert.doesNotMatch(copy, /sharemap-room=/);
+	assert.equal(await a(both), true);
+	await a('testUi.sharedFolder.open(true).then(()=>true)');
+	assert.notEqual((JSON.parse(await fs.readFile(copyFile + '.collab/manifest.json', 'utf8'))).room,
+		(JSON.parse(await fs.readFile(filename + '.collab/manifest.json', 'utf8'))).room);
+	console.log('PASS: Save As preserves all shapes and creates an independent journal');
 	if (process.env.SHAREMAP_TEST_FIXTURE)
 	{
 		const realXml = await fs.readFile(process.env.SHAREMAP_TEST_FIXTURE, 'utf8');

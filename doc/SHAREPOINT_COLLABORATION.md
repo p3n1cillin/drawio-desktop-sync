@@ -19,8 +19,8 @@ SharePoint controls permissions. The **…** menu includes Manage access and Cop
 link for people with access; copying that link does not grant new permissions.
 
 **AutoSave On/Off** controls automatic saving and merging. With it off, the normal
-Save command still saves and synchronizes. Save As creates an independent copy;
-reopening that copy from a synced folder starts a separate shared session.
+Save command still saves and synchronizes. Saving a new map or using Save As in
+a synced folder starts its own shared session without reopening the map.
 
 Unsynced diagrams retain draw.io's normal behavior. Collaboration can also be
 enabled manually from the details dialog for other filesystem sync providers.
@@ -46,7 +46,7 @@ Keep `Map.drawio.collab` beside `Map.drawio`; OneDrive must sync both.
 
 Reopening replays the journal. Missing causal parents wait for download. Changed
 manifests, corrupt/missing records or unrecognized external file edits stop
-snapshot writes rather than silently replacing someone else's work. Use this
+replay and snapshot writes rather than silently replacing someone else's work. Use this
 fork for editing shared maps; stock draw.io cannot publish into the journal.
 
 ## Limits
@@ -69,7 +69,9 @@ may lag or disappear with delayed sync or computer clock differences.
 
 Tests use two isolated editor replicas with simulated asynchronous file delivery,
 including concurrent edits, undo, offline reconnection, AutoSave control, recent
-editor presence and reopening. A live multi-user Microsoft 365 deployment still
+editor presence, reopening and document switches during delayed disk operations.
+Additional regressions cover UTF-8 size limits, large escaped diagrams, external
+edits, read-only files, sharing links and session cleanup. A live multi-user Microsoft 365 deployment still
 needs verification with those users' OneDrive clients.
 
 ## Build

@@ -15,7 +15,7 @@
 			!Array.isArray(op.parents) || op.parents.length > 10000 ||
 			!op.parents.every(validId) || op.parents.includes(op.id) ||
 			!op.patch || typeof op.patch !== 'object' || Array.isArray(op.patch) ||
-			JSON.stringify(op).length > maxBytes)
+			new TextEncoder().encode(JSON.stringify(op)).byteLength > maxBytes)
 		{
 			throw new Error('Invalid shared edit record');
 		}

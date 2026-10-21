@@ -1,10 +1,28 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {randomUUID, createHash} from 'node:crypto';
+import {setTimeout as delay} from 'node:timers/promises';
 import core from '../shared/journal-core.cjs';
 
 const maxFile = 16 * 1024 * 1024;
+// JSON may expand a control character into six ASCII bytes.
+const maxManifest = 6 * maxFile + 1024;
 const maxJournal = 128 * 1024 * 1024;
+
+async function replaceFile(temp, target)
+{
+	for (let attempt = 0; ; attempt++)
+	{
+		try { await fs.rename(temp, target); return; }
+		catch (e)
+		{
+			// OneDrive/antivirus can briefly hold a Windows file open while
+			// inspecting it. Keep the complete temp file until a bounded retry.
+			if (attempt >= 5 || !['EACCES', 'EBUSY', 'EPERM'].includes(e.code)) throw e;
+			await delay(25 * (2 ** attempt));
+		}
+	}
+}
 
 export class SharedFolder
 {
@@ -56,12 +74,12 @@ export class SharedFolder
 		const handle = await fs.open(temp, 'wx');
 		try
 		{
-			await handle.writeFile(JSON.stringify(value), 'utf8');
-			await handle.sync();
-		}
-		finally { await handle.close(); }
-		try
-		{
+			try
+			{
+				await handle.writeFile(JSON.stringify(value), 'utf8');
+				await handle.sync();
+			}
+			finally { await handle.close(); }
 			// Link is atomic and refuses an existing destination. Records are
 			// immutable, and incomplete temp files are never read by peers.
 			await fs.link(temp, target);
@@ -82,20 +100,39 @@ export class SharedFolder
 			const manifest = {version: 1, room: randomUUID(), base: createXml, originalHash};
 			await this.immutable('manifest.json', manifest).catch(e => { if (e.code !== 'EEXIST') throw e; });
 		}
-		try { this.manifest = await this.readJson('manifest.json', maxFile + 1024 * 1024); }
+		try { this.manifest = await this.readJson('manifest.json', maxManifest); }
 		catch (e)
 		{
 			if (e.code === 'ENOENT' && createXml == null) return null;
 			throw e;
 		}
 		if (this.manifest.version !== 1 || !core.validId(this.manifest.room) ||
-			typeof this.manifest.base !== 'string') throw new Error('Invalid collaboration manifest');
+			typeof this.manifest.base !== 'string' || Buffer.byteLength(this.manifest.base) > maxFile ||
+			!/^[a-f0-9]{64}$/.test(this.manifest.originalHash)) throw new Error('Invalid collaboration manifest');
+		await this.readCurrent();
 		return {manifest: this.manifest, author: this.author};
+	}
+
+	async readCurrent()
+	{
+		const stat = await fs.lstat(this.filename);
+		if (!stat.isFile() || stat.isSymbolicLink() || stat.size > maxFile) throw new Error('Unsafe or oversized diagram file');
+		const current = await fs.readFile(this.filename, 'utf8');
+		const hash = createHash('sha256').update(current).digest('hex');
+		if (hash !== this.manifest.originalHash)
+		{
+			try { await this.readJson('snapshot-' + hash + '.json', 1024 * 1024); }
+			catch
+			{
+				throw new Error('The .drawio file changed outside collaboration, or its sync records have not downloaded yet. Preserve that copy and wait for OneDrive before retrying.');
+			}
+		}
+		return current;
 	}
 
 	async scan()
 	{
-		const manifest = await this.readJson('manifest.json', maxFile + 1024 * 1024);
+		const manifest = await this.readJson('manifest.json', maxManifest);
 		if (manifest.room !== this.manifest.room || manifest.base !== this.manifest.base)
 		{
 			throw new Error('Collaboration manifest changed. Stop editing and restore the original manifest.');
@@ -160,51 +197,50 @@ export class SharedFolder
 		const records = await this.scan();
 		const currentHeads = core.order(records, this.manifest.room).heads;
 		if (JSON.stringify([...heads].sort()) !== JSON.stringify(currentHeads)) return false;
-		const targetStat = await fs.lstat(this.filename);
-		if (!targetStat.isFile() || targetStat.isSymbolicLink() || targetStat.size > maxFile) throw new Error('Unsafe or oversized diagram file');
-		const current = await fs.readFile(this.filename, 'utf8');
+		const current = await this.readCurrent();
 		if (current === xml) return true;
 		const hashOf = text => createHash('sha256').update(text).digest('hex');
-		const currentHash = hashOf(current);
-		if (currentHash !== this.manifest.originalHash)
-		{
-			try { await this.readJson('snapshot-' + currentHash + '.json', 1024 * 1024); }
-			catch (e)
-			{
-				throw new Error('The .drawio file changed outside ShareMap, or its sync records have not downloaded yet. Preserve that copy and wait for OneDrive before retrying.');
-			}
-		}
 		await this.immutable('snapshot-' + hashOf(xml) + '.json', {heads}).catch(e => { if (e.code !== 'EEXIST') throw e; });
 		// The .drawio file is a materialized view. Concurrent OneDrive versions
 		// are harmless to the authoritative immutable journal, which is replayed
 		// on every join. Never use this file as an operation source after joining.
 		const temp = path.join(path.dirname(this.filename), '.sharemap-' + randomUUID() + '.tmp');
 		const handle = await fs.open(temp, 'wx');
-		try { await handle.writeFile(xml, 'utf8'); await handle.sync(); }
-		finally { await handle.close(); }
-		try { await fs.rename(temp, this.filename); }
+		try
+		{
+			try { await handle.writeFile(xml, 'utf8'); await handle.sync(); }
+			finally { await handle.close(); }
+			await replaceFile(temp, this.filename);
+		}
 		finally { await fs.unlink(temp).catch(() => {}); }
 		return true;
 	}
 
 	async shareLink(value)
 	{
-		if (value == null)
+		const validateLink = text =>
 		{
-			const names = (await fs.readdir(this.directory)).filter(name => /^link-[a-f0-9]{64}\.json$/.test(name)).sort();
-			return names.length ? (await this.readJson(names[names.length - 1], 8192)).url : '';
-		}
-		const link = new URL(value);
-		if (link.protocol !== 'https:' || link.username || link.password ||
-			!(/^[a-z0-9-]+\.sharepoint\.com$/i.test(link.hostname)))
+			const link = new URL(text);
+			if (link.protocol !== 'https:' || link.username || link.password ||
+				!(/^[a-z0-9-]+\.sharepoint\.com$/i.test(link.hostname)) || link.href.length > 4096)
+			{
+				throw new Error('Use an HTTPS SharePoint folder link');
+			}
+			return link.href;
+		};
+		const names = (await fs.readdir(this.directory)).filter(name => /^link-[a-f0-9]{64}\.json$/.test(name)).sort();
+		let latest = {url: '', updated: 0};
+		for (const name of names)
 		{
-			throw new Error('Use an HTTPS SharePoint folder link');
+			const record = await this.readJson(name, 32768);
+			const updated = Number.isSafeInteger(record.updated) && record.updated >= 0 ? record.updated : 0;
+			if (updated >= latest.updated) latest = {url: validateLink(record.url), updated};
 		}
-		// Each link gets an immutable, content-addressed file. Avoid two people
-		// concurrently updating a shared settings file.
-		const hash = createHash('sha256').update(value).digest('hex');
-		await this.immutable('link-' + hash + '.json', {url: value}).catch(e => { if (e.code !== 'EEXIST') throw e; });
-		return link.href;
+		if (value == null) return latest.url;
+		const record = {url: validateLink(value), updated: Math.max(Date.now(), latest.updated + 1), id: randomUUID()};
+		const hash = createHash('sha256').update(JSON.stringify(record)).digest('hex');
+		await this.immutable('link-' + hash + '.json', record);
+		return record.url;
 	}
 
 	async activity(name, page, selection)
@@ -214,9 +250,12 @@ export class SharedFolder
 			page: String(page || '').slice(0, 200),
 			selection: Array.isArray(selection) ? selection.filter(id => typeof id === 'string').slice(0, 30).map(id => id.slice(0, 200)) : []};
 		const target = await this.safePath('presence-' + this.author + '.json');
-		const temp = await this.safePath('presence-' + this.author + '.tmp');
-		await fs.writeFile(temp, JSON.stringify(value), {flag: 'wx'});
-		try { await fs.rename(temp, target); }
+		const temp = await this.safePath('presence-' + this.author + '-' + randomUUID() + '.tmp');
+		try
+		{
+			await fs.writeFile(temp, JSON.stringify(value), {flag: 'wx'});
+			await replaceFile(temp, target);
+		}
 		finally { await fs.unlink(temp).catch(() => {}); }
 		const names = (await fs.readdir(this.directory)).filter(name => /^presence-[a-f0-9-]{36}\.json$/.test(name)).slice(0, 1000);
 		const active = [];
