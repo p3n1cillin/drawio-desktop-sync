@@ -238,3 +238,18 @@ test('failed durable writes remove their temporary files and leave existing reco
 	assert.deepEqual((await fs.readdir(a.directory)).filter(name => name.endsWith('.tmp')), []);
 	assert.deepEqual(await a.scan(), []);
 });
+
+test('reopened windows on one installation appear as one editor; equal names on different PCs remain distinct', async t =>
+{
+	const {filename, a} = await fixture(t);
+	const client = randomUUID();
+	const first = new SharedFolder(filename, client);
+	const reopened = new SharedFolder(filename, client);
+	await first.open();
+	await reopened.open();
+	await first.activity('Alex', 'page', []);
+	assert.equal((await reopened.activity('Alex', 'page', ['desk'])).length, 1);
+	const peers = await a.activity('Alex', 'page', []);
+	assert.equal(peers.length, 2);
+	assert.equal(peers.find(peer => peer.client === client).author, reopened.author);
+});

@@ -6,6 +6,7 @@ import {constants} from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import assert from 'node:assert/strict';
+import {randomUUID} from 'node:crypto';
 import {SharedFolder} from '../main/shared-folder.js';
 
 const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'sharemap-ui-'));
@@ -66,7 +67,7 @@ async function mirror()
 		for (const name of names.filter(name => name.endsWith('.json')))
 		{
 			await fs.copyFile(path.join(from + '.collab', name), path.join(to + '.collab', name), constants.COPYFILE_EXCL)
-				.catch(e => { if (e.code !== 'EEXIST') throw e; });
+				.catch(e => { if (e.code !== 'EEXIST' && !(e.code === 'ENOENT' && name.startsWith('presence-'))) throw e; });
 		}
 	}
 }
@@ -75,6 +76,15 @@ async function runTests()
 {
 try
 {
+	// These two replicas simulate different PCs. Other windows on the same
+	// installed client intentionally share one presence identity.
+	const replicaOpen = SharedFolder.prototype.open;
+	const remoteClient = randomUUID();
+	SharedFolder.prototype.open = function(...args)
+	{
+		if (this.filename === remoteFile) this.client = remoteClient;
+		return replicaOpen.apply(this, args);
+	};
 	await import('../main/electron.js');
 	const first = await until(() => BrowserWindow.getAllWindows()[0], 'first window');
 	const a = await attach(first);
@@ -147,6 +157,25 @@ try
 	const hasRemoteAvatar = '[...document.querySelectorAll("span")].some(s=>s.title.includes("recently active"))';
 	await until(async () => await a(hasRemoteAvatar) && await b(hasRemoteAvatar), 'recent editor presence');
 	console.log('PASS: recent editor avatars arrive across separate replicas');
+	await a('electron.sendMessage("newfile", {}); true');
+	const extra = await until(() => BrowserWindow.getAllWindows().find(win => win.id !== first.id && win.id !== second.id), 'same-client window');
+	const c = await attach(extra);
+	await c('testUi.loadArgs({args:[' + JSON.stringify(filename) + ']}); true');
+	await until(() => c('!!testUi.sharedFolder.getSession()?.initialized'), 'same-client join');
+	assert.equal(await a('testUi.sharedFolder.getSession().client'), await c('testUi.sharedFolder.getSession().client'));
+	await a('testUi.sharedFolder.getSession().lastActivity=0; testUi.sharedFolder.cycle().then(()=>true)');
+	const avatarCount = '[...document.querySelectorAll("span")].filter(s=>s.title.endsWith(" (you)") || s.title.includes("recently active")).length';
+	assert.equal(await a(avatarCount), 2);
+	const report = await a('electron.sharedFolder({action:"diagnostics",id:testUi.sharedFolder.getSession().id}).then(x=>({room:x.room,count:x.edits.count,cloudSupported:x.cloudFiles.supported,hasBase:JSON.stringify(x).includes("<mxfile")}))');
+	assert.equal(report.room, (JSON.parse(await fs.readFile(filename + '.collab/manifest.json', 'utf8'))).room);
+	assert.equal(report.hasBase, false);
+	assert.equal(report.cloudSupported, process.platform === 'win32');
+	assert.ok(report.count > 0);
+	await a('testUi.sharedFolder.diagnostics().then(()=>true)');
+	assert.equal(await a('!![...document.querySelectorAll("h2")].find(x=>x.textContent === "Sync diagnostics")'), true);
+	await a('testUi.hideDialog(); true');
+	extra.destroy();
+	console.log('PASS: multiple windows on one PC have one avatar and diagnostics omit diagram content');
 
 	await a('new Promise((resolve,reject) => testUi.getCurrentFile().save(false, resolve, reject)).then(() => true)');
 	await until(async () => (await fs.readFile(filename, 'utf8')).includes('sharemap-heads'), 'materialized snapshot');

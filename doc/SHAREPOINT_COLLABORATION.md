@@ -34,12 +34,27 @@ a synced folder starts its own shared session without reopening the map.
 
 Unsynced diagrams retain draw.io's normal behavior. Collaboration can also be
 enabled manually from the details dialog for other filesystem sync providers.
-Native sharing requires Windows OneDrive's English Share/Manage access shell
-commands. The app's settings and instance lock are separate from stock draw.io;
+Native sharing uses Windows OneDrive's English Share/Manage access shell
+commands. If Windows does not expose them, the app opens the validated SharePoint
+folder in your browser; use Share or Manage access there. A missing shell command
+does not mean OneDrive has stopped. The app's settings and instance lock are separate from stock draw.io;
 its installer uses a separate file handler from stock draw.io and upstream
 automatic updates are disabled.
 
 ## Storage and recovery
+
+**Saved locally** confirms the journal is durable on this PC. **Waiting for
+others** means no other client heartbeat has arrived; it does not prove nobody
+else has the file open. Updated clients group multiple windows from the same
+installation into one avatar. Older clients may leave an avatar for up to 90
+seconds after closing.
+
+If edits or avatars do not arrive, open **… > Sync diagnostics > Copy diagnostics**
+on both PCs. Compare `room`, `cloud.fileUrl` and `edits.fingerprint`. Matching
+rooms alone do not confirm that the same records reached both copies. The report
+includes edit IDs/counts, heartbeat ages, editor state and Windows Cloud Files
+sync flags; it contains no diagram XML or cell content. Windows `inSync` refers
+to that PC's provider state and does not confirm receipt on another PC.
 
 Keep `Map.drawio.collab` beside `Map.drawio`; OneDrive must sync both.
 

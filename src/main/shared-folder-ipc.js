@@ -3,10 +3,10 @@ import path from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {userInfo} from 'node:os';
 import {SharedFolder} from './shared-folder.js';
-import {getSyncLocation, showOneDriveShare} from './onedrive-shell.js';
+import {getSyncLocation, showOneDriveShare, getSharedCloudStatus} from './onedrive-shell.js';
 
 export function registerSharedFolder({ipcMain, validateSender, assertWritablePath, clipboard, shell,
-	syncLocation = getSyncLocation, nativeShare = showOneDriveShare})
+	syncLocation = getSyncLocation, nativeShare = showOneDriveShare, cloudStatus = getSharedCloudStatus, clientId})
 {
 	const owners = new Map();
 	ipcMain.handle('shared-folder', async (event, request) =>
@@ -34,7 +34,7 @@ export function registerSharedFolder({ipcMain, validateSender, assertWritablePat
 				throw new Error('Save the map as a .drawio file first');
 			}
 			await assertWritablePath(request.path);
-			const folder = new SharedFolder(request.path);
+			const folder = new SharedFolder(request.path, clientId);
 			const cloud = await syncLocation(request.path);
 			let info = await folder.open(request.base);
 			if (!info && cloud && typeof request.seed === 'string')
@@ -78,8 +78,39 @@ export function registerSharedFolder({ipcMain, validateSender, assertWritablePat
 				return true;
 			}
 			case 'reveal': shell.showItemInFolder(folder.filename); return true;
-			case 'shareNative': await nativeShare(folder.filename); return true;
-			case 'manageAccess': await nativeShare(folder.filename, 'access'); return true;
+			case 'shareNative':
+			case 'manageAccess':
+			{
+				try { await nativeShare(folder.filename, request.action === 'manageAccess' ? 'access' : 'share'); return {web: false}; }
+				catch
+				{
+					const value = folder.cloud?.folderUrl || await folder.shareLink();
+					let link;
+					try { link = new URL(value); } catch {}
+					if (!link || link.protocol !== 'https:' || link.username || link.password || !/^[a-z0-9-]+\.sharepoint\.com$/i.test(link.hostname))
+					{
+						throw new Error('Windows did not expose OneDrive sharing for this folder. Add its SharePoint folder link in Collaboration details, then retry.');
+					}
+					await shell.openExternal(link.href);
+					return {web: true};
+				}
+			}
+			case 'diagnostics':
+			{
+				await folder.safePath('manifest.json');
+				const report = await folder.diagnostics();
+				report.cloud = folder.cloud;
+				report.cloudFiles = await cloudStatus(folder.filename).catch(() => ({supported: false, error: 'Windows could not inspect Cloud Files state. Check the OneDrive icon.'}));
+				if (request.editor && typeof request.editor === 'object')
+				{
+					report.editor = {initialized: !!request.editor.initialized, paused: !!request.editor.paused,
+						running: !!request.editor.running, editing: !!request.editor.editing, mouseDown: !!request.editor.mouseDown,
+						error: String(request.editor.error || '').slice(0, 1000),
+						presenceError: String(request.editor.presenceError || '').slice(0, 1000)};
+				}
+				if (request.copy) clipboard.writeText(JSON.stringify(report, null, 2));
+				return report;
+			}
 			default: throw new Error('Unknown shared folder action');
 		}
 	});

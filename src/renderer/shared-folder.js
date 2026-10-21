@@ -14,7 +14,7 @@ Draw.loadPlugin(function(ui)
 	bar.style.cssText = 'position:fixed;top:7px;right:150px;z-index:4;display:flex;align-items:center;gap:10px;padding:3px 6px;color:light-dark(#222,#eee);font:12px Arial,sans-serif;max-width:calc(100vw - 410px)';
 	const status = document.createElement('span');
 	status.textContent = 'Save to OneDrive to collaborate';
-	status.style.cssText = 'max-width:190px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+	status.style.cssText = 'max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
 	bar.appendChild(status);
 	const people = document.createElement('div');
 	people.style.cssText = 'display:flex;gap:3px';
@@ -27,13 +27,14 @@ Draw.loadPlugin(function(ui)
 		people.replaceChildren();
 		for (const peer of peers.slice(0, 6))
 		{
+			const isYou = peer.author === s.author || (peer.client && peer.client === s.client);
 			const color = ['#2b78d0', '#9854c6', '#bb6332', '#16836a'][parseInt(peer.author.replace(/-/g, '').slice(0, 4), 16) % 4];
 			const avatar = document.createElement('span');
 			avatar.textContent = peer.name.slice(0, 2).toUpperCase();
-			avatar.title = peer.name + (peer.author === s.author ? ' (you)' : ' · recently active; presence follows OneDrive sync');
+			avatar.title = peer.name + (isYou ? ' (you)' : ' · recently active; presence follows OneDrive sync');
 			avatar.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;border-radius:50%;width:25px;height:25px;color:white;background:' + color + ';font-size:10px';
 			people.appendChild(avatar);
-			if (peer.author !== s.author && ui.currentPage && peer.page === ui.currentPage.getId())
+			if (!isYou && ui.currentPage && peer.page === ui.currentPage.getId())
 			{
 				for (const id of peer.selection)
 				{
@@ -98,6 +99,12 @@ Draw.loadPlugin(function(ui)
 	function active(s)
 	{
 		return session === s && ui.getCurrentFile() === s.file;
+	}
+	function savedStatus(s, pending)
+	{
+		const peers = s.remotePeers || 0;
+		status.textContent = pending ? 'Downloading changes…' : s.paused ? 'AutoSave off' :
+			'Saved locally · ' + (peers ? (peers + 1) + ' editors seen' : 'Waiting for others');
 	}
 	async function publish(s)
 	{
@@ -181,7 +188,7 @@ Draw.loadPlugin(function(ui)
 				}
 				const contributors = new Set(ordered.ready.map(op => op.author));
 				contributors.add(s.author);
-				status.textContent = ordered.pending ? 'Downloading changes…' : s.paused ? 'AutoSave off' : 'Saved locally';
+				savedStatus(s, ordered.pending);
 				status.title = ordered.ready.length + ' saved edits · ' + contributors.size + ' contributors. ' +
 					'Check the OneDrive icon for cloud sync status. Same-property edits use deterministic last-writer order; all edits remain in the journal.';
 				s.error = null;
@@ -192,9 +199,19 @@ Draw.loadPlugin(function(ui)
 					{
 						const peers = await call('activity', {name: localStorage.getItem('.sharemapName') || s.name,
 							page: ui.currentPage && ui.currentPage.getId(), selection: graph.getSelectionCells().map(cell => cell.id)}, s);
-						if (active(s)) showPeople(peers, s);
+						if (active(s))
+						{
+							s.remotePeers = peers.filter(peer => peer.author !== s.author && (!peer.client || peer.client !== s.client)).length;
+							s.presenceError = null;
+							showPeople(peers, s);
+							savedStatus(s, ordered.pending);
+						}
 					}
-					catch { /* Presence is best effort; journal saving remains available. */ }
+					catch (e)
+					{
+						s.presenceError = e;
+						if (active(s)) status.title += ' Editor presence failed: ' + e.message;
+					}
 				}
 			}
 			catch (e)
@@ -394,6 +411,52 @@ Draw.loadPlugin(function(ui)
 		button('Close', () => ui.hideDialog(), controls);
 		ui.showDialog(div, 570, 400, true, true);
 	}
+	function editorDiagnostics(s)
+	{
+		return {initialized: s.initialized, paused: s.paused, running: !!s.running,
+			editing: graph.isEditing(), mouseDown: !!graph.mouseDown,
+			error: s.error && s.error.message, presenceError: s.presenceError && s.presenceError.message};
+	}
+	async function diagnostics()
+	{
+		const s = session;
+		if (!s) throw new Error('Open a shared map first.');
+		status.textContent = 'Checking sync…';
+		const report = await call('diagnostics', {editor: editorDiagnostics(s)}, s);
+		if (!active(s)) return;
+		const div = document.createElement('div');
+		div.style.cssText = 'padding:20px;font:13px Arial;line-height:1.5';
+		const title = document.createElement('h2');
+		title.textContent = 'Sync diagnostics';
+		div.appendChild(title);
+		const note = document.createElement('p');
+		note.textContent = 'Compare Room, SharePoint file URL and edit fingerprint on both PCs. Different fingerprints mean edit records have not reached both copies. No diagram content is included.';
+		div.appendChild(note);
+		const text = document.createElement('textarea');
+		text.readOnly = true;
+		text.value = JSON.stringify(report, null, 2);
+		text.style.cssText = 'box-sizing:border-box;width:100%;height:280px;font:12px monospace';
+		div.appendChild(text);
+		const controls = document.createElement('div');
+		controls.style.cssText = 'display:flex;justify-content:flex-end;gap:8px;margin-top:12px';
+		div.appendChild(controls);
+		button('Copy diagnostics', async () =>
+		{
+			await call('diagnostics', {copy: true, editor: editorDiagnostics(s)}, s);
+			status.textContent = 'Sync diagnostics copied';
+		}, controls);
+		button('Close', () => ui.hideDialog(), controls);
+		ui.showDialog(div, 680, 460, true, true);
+		savedStatus(s, false);
+	}
+	async function shareFolder(action)
+	{
+		const result = await call(action);
+		if (result && result.web)
+		{
+			ui.editor.setStatus('SharePoint folder opened. Use Share or Manage access there.');
+		}
+	}
 
 	const autoSave = button('AutoSave  On', () =>
 	{
@@ -411,7 +474,7 @@ Draw.loadPlugin(function(ui)
 	bar.insertBefore(autoSave, status);
 	const share = button('Share', async () =>
 	{
-		if (session && session.cloud) await call('shareNative');
+		if (session && session.cloud) await shareFolder('shareNative');
 		else dialog();
 	});
 	share.style.cssText += ';background:#107c41;color:#fff;border:0;border-radius:5px;padding:6px 18px;font-weight:600';
@@ -430,11 +493,12 @@ Draw.loadPlugin(function(ui)
 		button('Manage access', async () =>
 		{
 			if (!session) throw new Error('Save the map in a OneDrive-synced folder first.');
-			await call('manageAccess');
+			await shareFolder('manageAccess');
 			ui.hideDialog();
 		}, div);
+		button('Sync diagnostics', () => { ui.hideDialog(); return diagnostics(); }, div);
 		button('Collaboration details', () => { ui.hideDialog(); dialog(); }, div);
-		ui.showDialog(div, 290, 160, true, true);
+		ui.showDialog(div, 290, 210, true, true);
 	});
 	status.style.cursor = 'pointer';
 	status.addEventListener('click', () =>
@@ -542,6 +606,6 @@ Draw.loadPlugin(function(ui)
 	}, 1000);
 	window.addEventListener('unload', () => clearInterval(timer));
 	// Exposed on the existing UI object for integration tests and diagnostics.
-	ui.sharedFolder = {open, cycle: () => session && cycle(session), getSession: () => session, dialog};
+	ui.sharedFolder = {open, cycle: () => session && cycle(session), getSession: () => session, dialog, diagnostics};
 	open().catch(showError);
 });

@@ -19,6 +19,7 @@ import FileWatcher from './file-watcher.js';
 import { ConfigPathGrants } from './config-paths.js';
 import { getUrlParams, getUrlParamsFiles } from './url-params.js';
 import { registerSharedFolder, sharedFolderScript } from './shared-folder-ipc.js';
+import {randomUUID} from 'node:crypto';
 import elecUpPkg from 'electron-updater';
 const {autoUpdater} = elecUpPkg;
 import {PDFDocument, PDFHexString, PDFName} from '@cantoo/pdf-lib';
@@ -4463,7 +4464,13 @@ ipcMain.on('app-load-finished', (e) =>
 		.catch(err => log.error('Shared folder initialization:', err.message));
 });
 
-registerSharedFolder({ipcMain, validateSender, assertWritablePath, clipboard, shell});
+let sharedFolderClientId = store?.get('sharedFolderClientId');
+if (typeof sharedFolderClientId !== 'string' || !/^[a-f0-9-]{36}$/.test(sharedFolderClientId))
+{
+	sharedFolderClientId = randomUUID();
+	store?.set('sharedFolderClientId', sharedFolderClientId);
+}
+registerSharedFolder({ipcMain, validateSender, assertWritablePath, clipboard, shell, clientId: sharedFolderClientId});
 
 ipcMain.on("rendererReq", async (event, args) =>
 {
