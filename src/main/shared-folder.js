@@ -167,7 +167,7 @@ export class SharedFolder
 		return [...this.cache.values()];
 	}
 
-	append(patch, parents, name)
+	append(patch, parents, name, operationId = randomUUID())
 	{
 		const write = async () =>
 		{
@@ -178,7 +178,7 @@ export class SharedFolder
 			{
 				throw new Error('Wait for the earlier edits to finish downloading');
 			}
-			const op = {version: 1, room: this.manifest.room, id: randomUUID(),
+			const op = {version: 1, room: this.manifest.room, id: operationId,
 				author: this.author, name: String(name || 'Editor').slice(0, 80),
 				clock: ++this.clock, parents, patch};
 			core.validate(op, this.manifest.room);

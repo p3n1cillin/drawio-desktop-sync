@@ -6,7 +6,8 @@ import {SharedFolder} from './shared-folder.js';
 import {getSyncLocation, showOneDriveShare, getSharedCloudStatus} from './onedrive-shell.js';
 
 export function registerSharedFolder({ipcMain, validateSender, assertWritablePath, clipboard, shell,
-	syncLocation = getSyncLocation, nativeShare = showOneDriveShare, cloudStatus = getSharedCloudStatus, clientId})
+	syncLocation = getSyncLocation, nativeShare = showOneDriveShare, cloudStatus = getSharedCloudStatus, clientId,
+	serverMaps, confirmServer = async () => false, blessServerMap = () => {}})
 {
 	const owners = new Map();
 	const initialThrottling = new WeakMap();
@@ -17,6 +18,16 @@ export function registerSharedFolder({ipcMain, validateSender, assertWritablePat
 			throw new Error('Shared folder access denied');
 		}
 		if (!request || typeof request !== 'object') throw new Error('Invalid request');
+		if (request.action === 'serverJoin' || request.action === 'serverCreate')
+		{
+			if (!serverMaps) throw new Error('Server collaboration is unavailable');
+			if (request.action === 'serverCreate') await assertWritablePath(request.path);
+			if (!await confirmServer(request)) throw new Error('Server connection was cancelled');
+			const filename = request.action === 'serverJoin' ? await serverMaps.join(request.invite, clientId) :
+				await serverMaps.create({xml: request.xml, name: path.basename(request.path)}, clientId);
+			blessServerMap(filename);
+			return {path: filename};
+		}
 		let sessions = owners.get(event.sender);
 		if (!sessions)
 		{
@@ -35,8 +46,9 @@ export function registerSharedFolder({ipcMain, validateSender, assertWritablePat
 				throw new Error('Save the map as a .drawio file first');
 			}
 			await assertWritablePath(request.path);
-			const folder = new SharedFolder(request.path, clientId);
-			const cloud = await syncLocation(request.path);
+			const remote = await serverMaps?.open(request.path, clientId);
+			const folder = remote || new SharedFolder(request.path, clientId);
+			const cloud = remote ? null : await syncLocation(request.path);
 			let info = await folder.open(request.base);
 			if (!info && cloud && typeof request.seed === 'string')
 			{
@@ -77,7 +89,7 @@ export function registerSharedFolder({ipcMain, validateSender, assertWritablePat
 		{
 			case 'scan': return folder.scan();
 			case 'activity': return folder.activity(request.name || userInfo().username, request.page, request.selection);
-			case 'append': return folder.append(request.patch, request.parents, request.name || userInfo().username);
+			case 'append': return folder.append(request.patch, request.parents, request.name || userInfo().username, request.operationId);
 			case 'snapshot': return folder.snapshot(request.xml, request.heads);
 			case 'link': return request.url ? folder.shareLink(request.url) : (await folder.shareLink() || folder.cloud?.folderUrl || '');
 			case 'copyLink':
@@ -88,9 +100,15 @@ export function registerSharedFolder({ipcMain, validateSender, assertWritablePat
 				return true;
 			}
 			case 'reveal': shell.showItemInFolder(folder.filename); return true;
+			case 'rotateLink':
+			{
+				if (folder.transport !== 'server') throw new Error('Open a server map first');
+				return folder.rotateLink();
+			}
 			case 'shareNative':
 			case 'manageAccess':
 			{
+				if (folder.transport === 'server') { clipboard.writeText(await folder.shareLink()); return {server: true}; }
 				try { await nativeShare(folder.filename, request.action === 'manageAccess' ? 'access' : 'share'); return {web: false}; }
 				catch
 				{
@@ -107,11 +125,13 @@ export function registerSharedFolder({ipcMain, validateSender, assertWritablePat
 			}
 			case 'diagnostics':
 			{
-				await folder.safePath('manifest.json');
+				if (folder.transport !== 'server') await folder.safePath('manifest.json');
 				const report = await folder.diagnostics();
+				report.clientBuild = '32.5.6';
+				if (folder.transport === 'server') report.server = folder.connection.server;
 				report.cloud = folder.cloud;
 				report.backgroundThrottling = event.sender.getBackgroundThrottling();
-				report.cloudFiles = await cloudStatus(folder.filename).catch(() => ({supported: false, error: 'Windows could not inspect Cloud Files state. Check the OneDrive icon.'}));
+				report.cloudFiles = folder.transport === 'server' ? {supported: false, transport: 'server'} : await cloudStatus(folder.filename).catch(() => ({supported: false, error: 'Windows could not inspect Cloud Files state. Check the OneDrive icon.'}));
 				if (request.editor && typeof request.editor === 'object')
 				{
 					report.editor = {initialized: !!request.editor.initialized, paused: !!request.editor.paused,

@@ -1,1 +1,1 @@
-export function disableUpdate() { return true;}
+export function disableUpdate() { return false;}

@@ -104,21 +104,24 @@ Draw.loadPlugin(function(ui)
 	{
 		const peers = s.remotePeers || 0;
 		status.textContent = pending ? 'Downloading changes…' : s.paused ? 'AutoSave off' :
-			'Saved locally · ' + (peers ? (peers + 1) + ' editors seen' : 'Waiting for others');
+			(s.transport === 'server' ? 'Saved to server · ' : 'Saved locally · ') + (peers ? (peers + 1) + ' editors seen' : s.transport === 'server' ? 'Connected' : 'Waiting for others');
 	}
 	async function publish(s)
 	{
 		if (!active(s)) return;
-		const change = capture(s);
+		const change = s.pendingPublish || capture(s);
 		if (!mxUtils.isEmptyObject(change.patch))
 		{
-			status.textContent = 'Saving edits locally…';
+			s.pendingPublish = change;
+			if (s.transport === 'server' && !change.operationId) change.operationId = window.crypto.randomUUID();
+			status.textContent = s.transport === 'server' ? 'Saving to server…' : 'Saving edits locally…';
 			const op = await call('append', {patch: change.patch, parents: s.heads,
-				name: localStorage.getItem('.sharemapName') || s.name || ''}, s);
+				operationId: change.operationId, name: localStorage.getItem('.sharemapName') || s.name || ''}, s);
 			s.records.set(op.id, op);
 			s.heads = core.order([...s.records.values()], s.manifest.room).heads;
 			s.baseline = change.pages;
 			s.vars = change.vars;
+			s.pendingPublish = null;
 		}
 	}
 	function materialize(s, ordered)
@@ -190,7 +193,8 @@ Draw.loadPlugin(function(ui)
 				contributors.add(s.author);
 				savedStatus(s, ordered.pending);
 				status.title = ordered.ready.length + ' saved edits · ' + contributors.size + ' contributors. ' +
-					'Check the OneDrive icon for cloud sync status. Same-property edits use deterministic last-writer order; all edits remain in the journal.';
+					(s.transport === 'server' ? 'Connected directly to ' + s.server + '. ' : 'Check the OneDrive icon for cloud sync status. ') +
+					'Same-property edits use deterministic last-writer order; all edits remain in the journal.';
 				s.error = null;
 				if (!s.lastActivity || Date.now() - s.lastActivity > 10000)
 				{
@@ -430,7 +434,7 @@ Draw.loadPlugin(function(ui)
 		title.textContent = 'Sync diagnostics';
 		div.appendChild(title);
 		const note = document.createElement('p');
-		note.textContent = 'Compare Room, SharePoint file URL and edit fingerprint on both PCs. Different fingerprints mean edit records have not reached both copies. No diagram content is included.';
+		note.textContent = 'Compare Room, transport and edit fingerprint on both PCs. Different fingerprints mean edit records have not reached both copies. No diagram content is included.';
 		div.appendChild(note);
 		const text = document.createElement('textarea');
 		text.readOnly = true;
@@ -457,6 +461,67 @@ Draw.loadPlugin(function(ui)
 			ui.editor.setStatus('SharePoint folder opened. Use Share or Manage access there.');
 		}
 	}
+	async function serverOpen(invite)
+	{
+		const info = await call('serverJoin', {invite}, null);
+		ui.loadArgs({args: [info.path]});
+	}
+	function serverJoinDialog()
+	{
+		const div = document.createElement('div');
+		div.style.cssText = 'padding:20px;font:14px Arial;line-height:1.5';
+		const title = document.createElement('h2');
+		title.textContent = 'Open shared map';
+		div.appendChild(title);
+		const note = document.createElement('p');
+		note.textContent = 'Paste the shared-map link from your colleague. Your map opens from the collaboration server and reconnects automatically next time.';
+		div.appendChild(note);
+		const input = document.createElement('textarea');
+		input.placeholder = 'drawio-sync://join/…';
+		input.style.cssText = 'box-sizing:border-box;width:100%;height:90px';
+		div.appendChild(input);
+		button('Open', async () => { await serverOpen(input.value.trim()); ui.hideDialog(); }, div);
+		button('Cancel', () => ui.hideDialog(), div);
+		ui.showDialog(div, 520, 260, true, true);
+	}
+	async function serverCreate()
+	{
+		const file = ui.getCurrentFile();
+		if (!file?.fileObject) throw new Error('Open or save the map first.');
+		graph.stopEditing();
+		ui.setGraphEnabled(false);
+		try
+		{
+			const info = await call('serverCreate', {path: file.fileObject.path, xml: ui.getFileData(true)}, null);
+			if (ui.getCurrentFile() !== file) throw new Error('The server map was created. Reopen it from Recent files after finishing this document.');
+			file.setModified(false);
+			ui.loadArgs({args: [info.path]});
+		}
+		finally { if (ui.getCurrentFile() === file) ui.setGraphEnabled(file.isEditable()); }
+	}
+	function serverAccess()
+	{
+		const s = session;
+		const div = document.createElement('div');
+		div.style.cssText = 'padding:20px;font:14px Arial;line-height:1.5';
+		const title = document.createElement('h2');
+		title.textContent = 'Share map';
+		div.appendChild(title);
+		const note = document.createElement('p');
+		note.textContent = 'People with the link can edit this map while connected to your network or VPN. They install drawio-desktop-sync and use … → Open shared map. Keep the link within your team.';
+		div.appendChild(note);
+		button('Copy shared-map link', async () => { await call('copyLink', {}, s); status.textContent = 'Shared-map link copied'; ui.hideDialog(); }, div);
+		if (s.owner) button('Revoke existing links', () =>
+		{
+			ui.confirm('Revoke all existing shared-map links? Colleagues will need a new link to reconnect.', async () =>
+			{
+				try { await call('rotateLink', {}, s); ui.hideDialog(); status.textContent = 'Links revoked · Share to copy a new link'; }
+				catch (error) { showError(error); }
+			});
+		}, div);
+		button('Close', () => ui.hideDialog(), div);
+		ui.showDialog(div, 540, 260, true, true);
+	}
 
 	const autoSave = button('AutoSave  On', () =>
 	{
@@ -474,15 +539,18 @@ Draw.loadPlugin(function(ui)
 	bar.insertBefore(autoSave, status);
 	const share = button('Share', async () =>
 	{
-		if (session && session.cloud) await shareFolder('shareNative');
+		if (session?.transport === 'server') serverAccess();
+		else if (session && session.cloud) await shareFolder('shareNative');
 		else dialog();
 	});
 	share.style.cssText += ';background:#107c41;color:#fff;border:0;border-radius:5px;padding:6px 18px;font-weight:600';
-	share.title = 'Share this map’s folder with OneDrive';
+	share.title = 'Share this map';
 	button('⋯', () =>
 	{
 		const div = document.createElement('div');
 		div.style.cssText = 'padding:20px;display:flex;flex-direction:column;gap:12px';
+		button('Open shared map', () => { ui.hideDialog(); serverJoinDialog(); }, div);
+		button('Move current map to server', () => { ui.hideDialog(); return serverCreate(); }, div);
 		button('Copy link for people with access', async () =>
 		{
 			if (!session) throw new Error('Save the map in a OneDrive-synced folder first.');
@@ -493,12 +561,13 @@ Draw.loadPlugin(function(ui)
 		button('Manage access', async () =>
 		{
 			if (!session) throw new Error('Save the map in a OneDrive-synced folder first.');
+			if (session.transport === 'server') { ui.hideDialog(); serverAccess(); return; }
 			await shareFolder('manageAccess');
 			ui.hideDialog();
 		}, div);
 		button('Sync diagnostics', () => { ui.hideDialog(); return diagnostics(); }, div);
 		button('Collaboration details', () => { ui.hideDialog(); dialog(); }, div);
-		ui.showDialog(div, 290, 210, true, true);
+		ui.showDialog(div, 310, 300, true, true);
 	});
 	status.style.cursor = 'pointer';
 	status.addEventListener('click', () =>
@@ -606,6 +675,6 @@ Draw.loadPlugin(function(ui)
 	}, 1000);
 	window.addEventListener('unload', () => clearInterval(timer));
 	// Exposed on the existing UI object for integration tests and diagnostics.
-	ui.sharedFolder = {open, cycle: () => session && cycle(session), getSession: () => session, dialog, diagnostics};
+	ui.sharedFolder = {open, cycle: () => session && cycle(session), getSession: () => session, dialog, diagnostics, serverOpen, serverCreate};
 	open().catch(showError);
 });

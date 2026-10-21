@@ -2,10 +2,14 @@ name: drawio-desktop-sync Windows build
 
 on:
   workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
   pull_request:
     paths:
       - 'src/**'
       - 'package*.json'
+      - 'sync.cjs'
       - 'electron-builder-sync.json'
       - 'build/sync-installer.nsh'
       - 'build/test-sync-installer.ps1'
@@ -36,6 +40,7 @@ jobs:
           "TMP=${{ runner.temp }}" >> $env:GITHUB_ENV
       - run: npm test
       - run: npm run test:shared-ui
+      - run: npm run test:server-ui
       - run: npm run build:sync
       - name: Verify installer and file associations
         shell: pwsh
@@ -49,3 +54,28 @@ jobs:
           path: |
             dist/sync/*-setup.exe
             dist/sync/*.zip
+            dist/sync/*.yml
+            dist/sync/*.blockmap
+
+  publish:
+    needs: windows
+    if: startsWith(github.ref, 'refs/tags/v') && github.repository == 'p3n1cillin/drawio-desktop-sync'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v6
+        with:
+          name: drawio-desktop-sync-Windows-x64
+          path: release
+      - name: Publish tested installer and update metadata
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --draft --verify-tag --title "$TAG" --generate-notes
+          fi
+          gh release upload "$TAG" release/* --clobber
+          gh release edit "$TAG" --draft=false --prerelease=false --latest

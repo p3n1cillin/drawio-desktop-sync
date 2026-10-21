@@ -4,6 +4,12 @@
   "copyright": "Copyright 2017-2026 draw.io Ltd",
   "asar": true,
   "npmRebuild": false,
+  "publish": {
+    "provider": "github",
+    "owner": "p3n1cillin",
+    "repo": "drawio-desktop-sync",
+    "releaseType": "release"
+  },
   "afterPack": "build/fuses.mjs",
   "artifactName": "drawio-desktop-sync-${version}-${arch}.${ext}",
   "directories": {

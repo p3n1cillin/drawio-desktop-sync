@@ -1,0 +1,176 @@
+import https from 'node:https';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import {randomUUID} from 'node:crypto';
+import core from '../shared/journal-core.cjs';
+
+const prefix = 'drawio-sync://join/';
+export function validateConnection(value)
+{
+	if (!value || value.version !== 1 || !core.validId(value.room) ||
+		!/^[-_a-zA-Z0-9]{40,100}$/.test(value.token) || typeof value.ca !== 'string' || value.ca.length > 16384 ||
+		!value.ca.includes('-----BEGIN CERTIFICATE-----')) throw new Error('Invalid shared-map link');
+	const url = new URL(value.server);
+	if (url.protocol !== 'https:' || url.username || url.password || url.pathname !== '/' || url.search || url.hash) throw new Error('Use an HTTPS collaboration server');
+	return {version: 1, server: url.origin, room: value.room, token: value.token, ca: value.ca,
+		name: String(value.name || 'Shared map').slice(0, 120),
+		...(value.ownerToken && /^[-_a-zA-Z0-9]{40,100}$/.test(value.ownerToken) ? {ownerToken: value.ownerToken} : {})};
+}
+export function shareInvite(connection)
+{
+	const {ownerToken: _owner, ...shared} = validateConnection(connection);
+	return prefix + Buffer.from(JSON.stringify(shared)).toString('base64url');
+}
+export function parseInvite(text)
+{
+	if (typeof text !== 'string' || !text.startsWith(prefix) || text.length > 32768) throw new Error('Paste a drawio-sync shared-map link');
+	try { return validateConnection(JSON.parse(Buffer.from(text.slice(prefix.length), 'base64url').toString('utf8'))); }
+	catch { throw new Error('Invalid shared-map link'); }
+}
+export async function serverRequest(connection, route, body, token = connection.ownerToken || connection.token)
+{
+	const url = new URL(route, connection.server);
+	const data = Buffer.from(JSON.stringify(body));
+	return new Promise((resolve, reject) =>
+	{
+		const req = https.request(url, {method: 'POST', ca: connection.ca, rejectUnauthorized: true,
+			minVersion: 'TLSv1.2', headers: {'Content-Type': 'application/json', 'Content-Length': data.length, Authorization: 'Bearer ' + token}}, res =>
+		{
+			const chunks = [];
+			let bytes = 0;
+			res.on('data', chunk =>
+			{
+				bytes += chunk.length;
+				if (bytes > 150 * 1024 * 1024) res.destroy(new Error('Server response exceeds the size limit'));
+				else chunks.push(chunk);
+			});
+			res.on('error', reject);
+			res.on('end', () =>
+			{
+				try
+				{
+					const result = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+					if (res.statusCode !== 200) reject(new Error(result.error || 'Server access failed'));
+					else resolve(result);
+				}
+				catch { reject(new Error('Invalid response from the collaboration server')); }
+			});
+		});
+		req.setTimeout(15000, () => req.destroy(new Error('Cannot reach the collaboration server. Your pending edit is kept on this PC; reconnect and retry.')));
+		req.on('error', error => reject(new Error(error.code ? 'Cannot connect securely to the collaboration server (' + error.code + '). Your pending edits are kept on this PC.' : error.message)));
+		req.end(data);
+	});
+}
+async function saveJson(filename, value)
+{
+	await fs.mkdir(path.dirname(filename), {recursive: true});
+	const temp = filename + '.' + randomUUID() + '.tmp';
+	try
+	{
+		const handle = await fs.open(temp, 'wx', 0o600);
+		try { await handle.writeFile(JSON.stringify(value)); await handle.sync(); }
+		finally { await handle.close(); }
+		await fs.rename(temp, filename);
+	}
+	finally { await fs.unlink(temp).catch(() => {}); }
+}
+export class ServerFolder
+{
+	constructor(filename, connection, client)
+	{
+		this.filename = filename;
+		this.connection = validateConnection(connection);
+		this.client = client || randomUUID();
+		this.author = randomUUID();
+		this.transport = 'server';
+	}
+	async request(action, body = {})
+	{
+		return serverRequest(this.connection, '/v1/maps/' + this.connection.room + '/' + action,
+			{...body, author: this.author, client: this.client});
+	}
+	async open()
+	{
+		// A lost response must not turn a durable edit into a second operation.
+		const directory = path.dirname(this.filename);
+		for (const name of (await fs.readdir(directory)).filter(name => /^outbox-[a-f0-9-]{36}\.json$/.test(name)).sort())
+		{
+			const pendingPath = path.join(directory, name);
+			const pending = JSON.parse(await fs.readFile(pendingPath, 'utf8'));
+			await serverRequest(this.connection, '/v1/maps/' + this.connection.room + '/append', pending);
+			await fs.unlink(pendingPath).catch(error => { if (error.code !== 'ENOENT') throw error; });
+		}
+		const info = await this.request('open');
+		this.manifest = info.manifest;
+		return {...info, author: this.author, client: this.client, transport: this.transport,
+			server: this.connection.server, owner: !!this.connection.ownerToken};
+	}
+	scan() { return this.request('scan'); }
+	async append(patch, parents, name, operationId)
+	{
+		const record = {patch, parents, name, operationId: operationId || randomUUID(), author: this.author, client: this.client};
+		const pendingPath = path.join(path.dirname(this.filename), 'outbox-' + record.operationId + '.json');
+		await saveJson(pendingPath, record);
+		const result = await this.request('append', record);
+		await fs.unlink(pendingPath).catch(error => { if (error.code !== 'ENOENT') throw error; });
+		return result;
+	}
+	snapshot(xml, heads) { return this.request('snapshot', {xml, heads}); }
+	activity(name, page, selection) { return this.request('activity', {name, page, selection}); }
+	leave() { return this.request('leave'); }
+	diagnostics() { return this.request('diagnostics'); }
+	async shareLink() { return shareInvite(this.connection); }
+	async rotateLink()
+	{
+		const {token} = await this.request('rotate');
+		this.connection.token = token;
+		await saveJson(path.join(path.dirname(this.filename), 'connection.json'), this.connection);
+		return true;
+	}
+}
+
+export class ServerMaps
+{
+	constructor(userData, mapsDirectory = path.join(userData, 'server-maps')) { this.directory = mapsDirectory; this.setupPath = path.join(userData, 'server-setup.json'); }
+	async cache(connection, client)
+	{
+		connection = validateConnection(connection);
+		const directory = path.join(this.directory, connection.room);
+		await fs.mkdir(directory, {recursive: true});
+		try
+		{
+			const previous = validateConnection(JSON.parse(await fs.readFile(path.join(directory, 'connection.json'), 'utf8')));
+			if (!connection.ownerToken && previous.ownerToken && previous.server === connection.server && previous.ca === connection.ca) connection.ownerToken = previous.ownerToken;
+		}
+		catch (error) { if (error.code !== 'ENOENT') throw error; }
+		// Fetch the actual title from the server, rather than trusting link text.
+		const probe = new ServerFolder(path.join(directory, 'map.drawio'), connection, client);
+		const info = await probe.open();
+		const safeName = String(info.name || 'Shared map').replace(/[^a-zA-Z0-9 _.-]/g, '_').replace(/\.drawio$/i, '').replace(/[. ]+$/, '');
+		const filename = path.join(directory, 'Map - ' + (safeName || 'Shared map') + '.drawio');
+		connection.name = info.name;
+		// Keep a launchable base cache. Server snapshots, never this file, are authoritative.
+		await fs.writeFile(filename, info.manifest.base, {flag: 'wx'}).catch(error => { if (error.code !== 'EEXIST') throw error; });
+		await saveJson(path.join(directory, 'connection.json'), connection);
+		return filename;
+	}
+	async join(invite, client) { return this.cache(parseInvite(invite), client); }
+	async create({xml, name}, client)
+	{
+		let setup;
+		try { setup = JSON.parse(await fs.readFile(this.setupPath, 'utf8')); }
+		catch { throw new Error('This PC has no server setup. Ask the server administrator to configure it, or use Open shared map with an invitation link.'); }
+		const result = await serverRequest(setup, '/v1/create', {xml, name}, setup.adminToken);
+		return this.cache({version: 1, server: setup.server, ca: setup.ca, ...result}, client);
+	}
+	async open(filename, client)
+	{
+		const relative = path.relative(this.directory, filename);
+		if (relative.startsWith('..') || path.isAbsolute(relative)) return null;
+		const parts = relative.split(path.sep);
+		if (parts.length !== 2 || !core.validId(parts[0]) || !/\.drawio$/i.test(parts[1])) return null;
+		const connection = JSON.parse(await fs.readFile(path.join(this.directory, parts[0], 'connection.json'), 'utf8'));
+		if (connection.room !== parts[0]) throw new Error('The shared-map cache belongs to a different room');
+		return new ServerFolder(filename, connection, client);
+	}
+}
