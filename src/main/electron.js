@@ -20,10 +20,18 @@ import { ConfigPathGrants } from './config-paths.js';
 import { getUrlParams, getUrlParamsFiles } from './url-params.js';
 import { registerSharedFolder, sharedFolderScript } from './shared-folder-ipc.js';
 import {ServerMaps, parseInvite} from './server-folder.js';
+import {prepareServerArguments} from './server-launch.js';
 import {randomUUID} from 'node:crypto';
 import elecUpPkg from 'electron-updater';
 const {autoUpdater} = elecUpPkg;
-import {PDFDocument, PDFHexString, PDFName} from '@cantoo/pdf-lib';
+// PDF parsing is only needed for PDF export; keep it off the normal startup path.
+let PDFDocument, PDFHexString, PDFName;
+let pdfLibrary;
+async function loadPdfLibrary()
+{
+	if (!pdfLibrary) pdfLibrary = import('@cantoo/pdf-lib');
+	({PDFDocument, PDFHexString, PDFName} = await pdfLibrary);
+}
 import Store from 'electron-store';
 import ProgressBar from './progress-bar.js';
 import contextMenu from 'electron-context-menu';
@@ -828,7 +836,7 @@ function createWindow (opt = {})
 // This method will be called when Electron has finished
 // initialization and is ready to create browser windows.
 // Some APIs can only be used after this event occurs.
-app.whenReady().then(() =>
+app.whenReady().then(async () =>
 {
 	// Determine initial defaultAdaptiveColors for the drawio Configuration
 	// before any window is created so the value is passed to the preload.
@@ -897,7 +905,9 @@ app.whenReady().then(() =>
 		createWindow(opts);
 	})
 	
-    let argv = process.argv
+    let argv;
+	try { argv = await prepareServerArguments([...process.argv], serverMaps); }
+	catch (error) { dialog.showErrorBox('Cannot open shared map', error.message); app.quit(); return; }
 
     // https://github.com/electron/electron/issues/4690#issuecomment-217435222
     if (process.defaultApp != true)
@@ -1567,9 +1577,11 @@ app.whenReady().then(() =>
     } 
     else 
     {
-    	app.on('second-instance', (event, commandLine, workingDirectory) => {
+	app.on('second-instance', async (event, commandLine, workingDirectory) => {
 			// Creating a new window while a save/open dialog is open crashes the app
 			if (dialogOpen) return;
+			try { commandLine = await prepareServerArguments(commandLine, serverMaps); }
+			catch (error) { dialog.showErrorBox('Cannot open shared map', error.message); return; }
 
     		//Create another window
     		let win = createWindow()
@@ -2685,6 +2697,7 @@ function addDiagramAnnotations(pdfDoc, annots)
 
 async function mergePdfs(pdfFiles, xml, annots)
 {
+	await loadPdfLibrary();
 	// Only ever called with a single PDF since the per-page render loop was
 	// removed with [jgraph/drawio-desktop#2170]. Older releases merged the
 	// parts here with the XML as a file attachment, a format readPdfXml
@@ -4474,14 +4487,29 @@ if (typeof sharedFolderClientId !== 'string' || !/^[a-f0-9-]{36}$/.test(sharedFo
 	store?.set('sharedFolderClientId', sharedFolderClientId);
 }
 const serverMaps = new ServerMaps(app.getPath('userData'), app.getPath('userData') + '-maps');
-registerSharedFolder({ipcMain, validateSender, assertWritablePath, clipboard, shell, clientId: sharedFolderClientId,
-	serverMaps, blessServerMap: blessPath, confirmServer: async request =>
+function createServerShortcut(folder)
+{
+	if (process.platform !== 'win32') return null;
+	const title = folder.connection.name.replace(/\.drawio$/i, '').replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').slice(0, 100);
+	const stem = path.join(app.getPath('desktop'), title + ' (shared map)');
+	let shortcut = stem + '.lnk';
+	for (let index = 2; fs.existsSync(shortcut); index++)
 	{
-		const endpoint = request.action === 'serverJoin' ? parseInvite(request.invite).server :
+		try { if (shell.readShortcutLink(shortcut).args === '--shared-map=' + folder.connection.room) break; } catch {}
+		shortcut = stem + ' (' + index + ').lnk';
+	}
+	if (!shell.writeShortcutLink(shortcut, 'create', {target: process.execPath, args: '--shared-map=' + folder.connection.room,
+		icon: process.execPath, iconIndex: 0, description: 'Open shared map from the collaboration server'})) throw new Error('Windows could not create the map shortcut');
+	return shortcut;
+}
+registerSharedFolder({ipcMain, validateSender, assertWritablePath, clipboard, shell, clientId: sharedFolderClientId,
+	serverMaps, blessServerMap: blessPath, createShortcut: createServerShortcut, confirmServer: async request =>
+	{
+		const endpoint = request.action === 'rotateLink' ? request.server : request.action === 'serverJoin' ? parseInvite(request.invite).server :
 			JSON.parse(await fsProm.readFile(serverMaps.setupPath, 'utf8')).server;
-		return (await dialog.showMessageBox({type: 'question', buttons: ['Connect', 'Cancel'], defaultId: 0, cancelId: 1,
-			message: request.action === 'serverJoin' ? 'Open this shared map?' : 'Create a shared map on your server?',
-			detail: endpoint + '\nThe server stores the diagram and its edit history. People with the map link can edit it.'})).response === 0;
+		return (await dialog.showMessageBox({type: 'question', buttons: [request.action === 'rotateLink' ? 'Revoke links' : 'Connect', 'Cancel'], defaultId: 0, cancelId: 1,
+			message: request.action === 'rotateLink' ? 'Revoke all existing edit links?' : request.action === 'serverJoin' ? 'Open this shared map?' : 'Create a shared map on your server?',
+			detail: endpoint + (request.action === 'rotateLink' ? '\nColleagues will need a new link to reconnect.' : '\nThe server stores the diagram and its edit history. People with the map link can edit it. A desktop shortcut will be created.')})).response === 0;
 	}});
 
 ipcMain.on("rendererReq", async (event, args) =>

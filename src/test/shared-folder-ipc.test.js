@@ -1,107 +1,88 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import fs from 'node:fs/promises';
-import path from 'node:path';
-import os from 'node:os';
 import {EventEmitter} from 'node:events';
+import {randomUUID} from 'node:crypto';
 import {registerSharedFolder} from '../main/shared-folder-ipc.js';
 
-async function fixture(t, syncLocation = async () => ({folderUrl: 'https://company.sharepoint.com/sites/IT/'}), options = {})
+function fixture(options = {})
 {
-	const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'sharemap-ipc-'));
-	t.after(() => fs.rm(directory, {recursive: true, force: true}));
-	const filename = path.join(directory, 'map.drawio');
-	await fs.writeFile(filename, '<mxfile/>');
-	let handler;
-	let copied;
-	const opened = [];
-	const sender = new EventEmitter();
-	sender.mainFrame = {};
+	let handler, copied, leaves = 0, shortcuts = 0, blessed = 0, rotations = 0;
+	const sender = new EventEmitter(); sender.mainFrame = {};
+	let throttling = true;
 	sender.isDestroyed = () => false;
-	let backgroundThrottling = true;
-	sender.setBackgroundThrottling = value => { backgroundThrottling = value; };
-	sender.getBackgroundThrottling = () => backgroundThrottling;
+	sender.getBackgroundThrottling = () => throttling;
+	sender.setBackgroundThrottling = value => { throttling = value; };
 	const event = {sender, senderFrame: sender.mainFrame};
+	const folder = {filename: 'shared.drawio', connection: {server: 'https://example.test'}, peers: [], stats: {requests: 1},
+		open: async () => ({manifest: {room: randomUUID(), base: 'private diagram'}, transport: 'server'}),
+		leave: async () => { leaves++; }, updates: async () => [],
+		shareLink: async () => 'drawio-sync://join/credential', rotateLink: async () => { rotations++; return true; },
+		diagnostics: async () => ({room: 'room', edits: {count: 0}, presence: [], transport: 'server'})};
 	registerSharedFolder({ipcMain: {handle: (_channel, callback) => { handler = callback; }},
 		validateSender: frame => frame === sender.mainFrame, assertWritablePath: async () => {},
-		clipboard: {writeText: value => { copied = value; }}, shell: {openExternal: async url => { opened.push(url); }}, syncLocation,
-		cloudStatus: async () => ({supported: false}), ...options});
-	return {filename, event, sender, opened, copied: () => copied, call: request => handler(event, request)};
+		clipboard: {writeText: value => { copied = value; }},
+		serverMaps: {open: async filename => filename === 'ordinary.drawio' ? null : folder, join: async () => folder.filename, create: async () => folder.filename},
+		confirmServer: async () => true, blessServerMap: () => { blessed++; }, createShortcut: () => { shortcuts++; }, ...options});
+	return {folder, event, sender, copied: () => copied, counts: () => ({leaves, shortcuts, blessed, rotations}), call: request => handler(event, request)};
 }
-
-test('Copy link uses the explicit sharing link before a registry folder URL', async t =>
+test('subframes cannot invoke collaboration IPC', async () =>
 {
-	const h = await fixture(t);
-	const info = await h.call({action: 'open', path: h.filename, base: '<mxfile/>'});
-	await h.call({action: 'copyLink', id: info.id});
-	assert.equal(h.copied(), 'https://company.sharepoint.com/sites/IT/');
-	const url = 'https://company.sharepoint.com/:f:/s/IT/sharing-token';
-	await h.call({action: 'link', id: info.id, url});
-	assert.equal(await h.call({action: 'link', id: info.id}), url);
-	await h.call({action: 'copyLink', id: info.id});
-	assert.equal(h.copied(), url);
+	const h = fixture(); h.event.senderFrame = {};
+	await assert.rejects(h.call({action: 'open', path: 'shared.drawio'}), /denied/);
 });
-
-test('leaving a missing collaboration folder closes the session successfully', async t =>
+test('ordinary local diagrams do not enable a sharing transport or change throttling', async () =>
 {
-	const h = await fixture(t);
-	const info = await h.call({action: 'open', path: h.filename, base: '<mxfile/>'});
-	await fs.rm(h.filename + '.collab', {recursive: true});
-	assert.equal(await h.call({action: 'close', id: info.id}), true);
-	await assert.rejects(h.call({action: 'scan', id: info.id}), /closed/);
-});
-
-test('an editor destroyed during opening cannot acquire an orphaned session', async t =>
-{
-	const h = await fixture(t, async () => { h.sender.isDestroyed = () => true; h.sender.emit('destroyed'); return null; });
-	await assert.rejects(h.call({action: 'open', path: h.filename, base: '<mxfile/>'}), /Editor was closed/);
-});
-
-test('shared folder requests from a subframe are rejected', async t =>
-{
-	const h = await fixture(t);
-	h.event.senderFrame = {};
-	await assert.rejects(h.call({action: 'open', path: h.filename, base: '<mxfile/>'}), /denied/);
-});
-
-test('missing native OneDrive commands fall back to the validated SharePoint folder', async t =>
-{
-	const h = await fixture(t, undefined, {nativeShare: async () => { throw new Error('raw powershell command failed'); }});
-	const info = await h.call({action: 'open', path: h.filename, base: '<mxfile/>'});
-	assert.deepEqual(await h.call({action: 'manageAccess', id: info.id}), {web: true});
-	assert.deepEqual(await h.call({action: 'shareNative', id: info.id}), {web: true});
-	assert.deepEqual(h.opened, ['https://company.sharepoint.com/sites/IT/', 'https://company.sharepoint.com/sites/IT/']);
-});
-
-test('sharing fallback refuses non-SharePoint destinations and hides shell internals', async t =>
-{
-	const h = await fixture(t, async () => ({folderUrl: 'https://evil.test/'}),
-		{nativeShare: async () => { throw new Error('raw powershell command failed'); }});
-	const info = await h.call({action: 'open', path: h.filename, base: '<mxfile/>'});
-	await assert.rejects(h.call({action: 'manageAccess', id: info.id}), e => !e.message.includes('powershell') && /SharePoint/.test(e.message));
-	assert.deepEqual(h.opened, []);
-});
-
-test('diagnostics compare session and delivery without including diagram content', async t =>
-{
-	const h = await fixture(t);
-	const info = await h.call({action: 'open', path: h.filename, base: '<mxfile>private content</mxfile>'});
-	const report = await h.call({action: 'diagnostics', id: info.id, copy: true});
-	assert.equal(report.room, info.manifest.room);
-	assert.equal(report.edits.count, 0);
-	assert.equal(report.cloud.folderUrl, 'https://company.sharepoint.com/sites/IT/');
-	assert.equal(JSON.stringify(report).includes('private content'), false);
-	assert.deepEqual(JSON.parse(h.copied()), report);
-});
-
-test('shared sessions keep polling in the background until the last session closes', async t =>
-{
-	const h = await fixture(t);
-	const first = await h.call({action: 'open', path: h.filename, base: '<mxfile/>'});
-	const second = await h.call({action: 'open', path: h.filename});
-	assert.equal(h.sender.getBackgroundThrottling(), false);
-	await h.call({action: 'close', id: first.id});
-	assert.equal(h.sender.getBackgroundThrottling(), false);
-	await h.call({action: 'close', id: second.id});
+	const h = fixture();
+	assert.equal(await h.call({action: 'open', path: 'ordinary.drawio'}), null);
 	assert.equal(h.sender.getBackgroundThrottling(), true);
+});
+test('path authorization is required before opening and saving a shared map', async () =>
+{
+	const h = fixture({assertWritablePath: async () => { throw new Error('denied path'); }});
+	await assert.rejects(h.call({action: 'open', path: 'shared.drawio'}), /denied path/);
+});
+test('background polling remains enabled until the last window session closes', async () =>
+{
+	const h = fixture();
+	const a = await h.call({action: 'open', path: 'shared.drawio'});
+	const b = await h.call({action: 'open', path: 'shared.drawio'});
+	assert.equal(h.sender.getBackgroundThrottling(), false);
+	await h.call({action: 'close', id: a.id}); assert.equal(h.sender.getBackgroundThrottling(), false);
+	await h.call({action: 'close', id: b.id}); assert.equal(h.sender.getBackgroundThrottling(), true);
+	assert.equal(h.counts().leaves, 2);
+});
+test('destroying an editor removes all of its presence sessions', async () =>
+{
+	const h = fixture(); await h.call({action: 'open', path: 'shared.drawio'});
+	h.sender.emit('destroyed'); await new Promise(resolve => setImmediate(resolve));
+	assert.equal(h.counts().leaves, 1);
+});
+test('joining requires native consent, then blesses only the returned cache and creates a shortcut', async () =>
+{
+	const denied = fixture({confirmServer: async () => false});
+	await assert.rejects(denied.call({action: 'serverJoin', invite: 'invite'}), /cancelled/);
+	assert.equal(denied.counts().blessed, 0);
+	const h = fixture(); await h.call({action: 'serverJoin', invite: 'invite'});
+	assert.equal(h.counts().blessed, 1); assert.equal(h.counts().shortcuts, 1);
+});
+test('revoking links requires native consent', async () =>
+{
+	const h = fixture({confirmServer: async () => false});
+	const info = await h.call({action: 'open', path: 'shared.drawio'});
+	await assert.rejects(h.call({action: 'rotateLink', id: info.id}), /cancelled/);
+	assert.equal(h.counts().rotations, 0);
+});
+test('an unavailable desktop shortcut does not prevent joining a saved server map', async () =>
+{
+	const h = fixture({createShortcut: () => { throw new Error('Desktop unavailable'); }});
+	const result = await h.call({action: 'serverJoin', invite: 'invite'});
+	assert.equal(result.path, 'shared.drawio'); assert.equal(result.shortcutCreated, false);
+});
+test('diagnostics include connection timing, sanitize renderer state and exclude diagram content', async () =>
+{
+	const h = fixture(); const info = await h.call({action: 'open', path: 'shared.drawio'});
+	const report = await h.call({action: 'diagnostics', id: info.id, copy: true, editor: {initialized: true, error: 'x'.repeat(2000), xml: 'private diagram'}});
+	assert.equal(report.editor.error.length, 1000); assert.equal(report.clientBuild, '32.5.7');
+	assert.equal(report.connection.requests, 1); assert.equal(report.editor.xml, undefined);
+	assert.equal(h.copied().includes('private diagram'), false);
 });

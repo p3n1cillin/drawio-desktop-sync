@@ -1,122 +1,62 @@
-drawio-desktop-sync fork
---------------------
+# drawio-desktop-sync
 
-[Download the Windows x64 preview](https://github.com/p3n1cillin/drawio-desktop-sync/releases).
-Run the Windows `-setup.exe` installer. It registers `.drawio` files and adds
-Start menu and desktop shortcuts. If Windows already has a chosen default,
-select `drawio-desktop-sync` on the Default apps page opened by setup.
-The ZIP remains available for portable use.
+A general-purpose draw.io Desktop fork with self-hosted collaboration and AutoSave.
+It works with your diagrams and your server; no company, tenant, diagram or server
+address is built into the application.
 
-This fork adds automatic AutoSave, merging of shared edits, recent-editor
-indicators and native OneDrive sharing for `.drawio` files in Windows OneDrive
-and SharePoint sync folders. It works with any map; no document or tenant is
-hardcoded. See [usage, build instructions and limits](doc/SHAREPOINT_COLLABORATION.md).
-Changes follow OneDrive delivery rather than Excel's instant co-authoring service.
+[Download the Windows installer](https://github.com/p3n1cillin/drawio-desktop-sync/releases/latest).
+Run the `-setup.exe` for your Windows account. It registers `.drawio` files and
+creates desktop and Start menu shortcuts. The ZIP is an optional portable build.
 
-About
------ 
+## Collaboration
 
-**drawio-desktop** is a diagramming desktop app based on [Electron](https://electronjs.org/) that wraps the [core draw.io editor](https://github.com/jgraph/drawio).
+- One authoritative diagram and durable edit history on your HTTPS server.
+- AutoSave, concurrent shape/property merges, undo and reconnection.
+- Live editor avatars, named selection outlines and active-editing indicators.
+  Click an avatar to find the person's selected object. Set your display name in
+  the three-dot menu.
+- Review overlapping property edits and restore an earlier value without losing
+  the accepted history. Independent properties merge automatically; this is not
+  character-by-character text merging.
+- Per-map sharing links, owner-controlled revocation and automatic desktop map
+  shortcuts. Room-based shortcuts restore a missing local launch cache.
+- Incremental updates, cached server rooms and no repeated diagram cloning or
+  serialization during idle sync. Unused server rooms expire from memory.
+- Standalone `.drawio` files retain normal draw.io behaviour. Save As creates an
+  independent copy. The former OneDrive collaboration transport and shell
+  sharing integration have been removed.
 
-Download built binaries from the [releases section](https://github.com/jgraph/drawio-desktop/releases).
+Set up your service using the [server guide](src/server/README.md). An owner can
+open a diagram and choose **Share** to create its server copy, then copy a link.
+Colleagues choose **… → Open shared map**, paste the link once and accept the
+server connection. A desktop shortcut is created for subsequent use. The header
+reads **Saved to server**. The original imported file is retained as a backup.
 
-**Can I use this app for free?** Yes, under the GPL v3 license. If you don't change the code and accept it is provided "as-is", you can use it for any purpose.
+People with an edit link can read and edit that map. Display names are labels,
+not Microsoft identities. Clients must be able to reach the server. Accepted
+edits are durable, and pending published operations have a local outbox; reconnect
+before closing to save later unsent changes. Complete offline editing and the
+Microsoft Excel coauthoring protocol are not implemented.
 
-Windows installation
---------------------
+## Automatic updates
 
-Three flavours of Windows download are published on the [releases page](https://github.com/jgraph/drawio-desktop/releases):
+Installer builds check this fork's stable GitHub releases hourly, download newer
+versions in the background and install when the app closes. Help includes
+update settings and Restart to Update. Portable builds notify only. Older
+`sync.1` through `sync.5` previews need a one-time installer upgrade.
 
-- `draw.io-<version>-windows-installer.exe` — NSIS installer. Installs **per-machine** into `Program Files` and **requires administrator privileges**.
-- `draw.io-<version>.msi` — MSI installer. Installs **per-user** into the user's profile and **does not require administrator privileges**. Use this one if you don't have admin rights on your machine.
-- `draw.io-<version>-windows.zip` — portable build. Extract the zip anywhere and run `draw.io.exe`, with no installation (and therefore without admin rights). File-type associations are not registered.
+## Build and test
 
-The Microsoft Store (APPX) build is also installable per-user without admin rights via the Store.
+Use Node 24 LTS and clone with submodules. Run `npm ci`, `npm test`,
+`npm run test:server-ui` and `npm run build:sync`. The Windows CI checks real
+installation, file associations, reinstall and uninstall. A version tag publishes
+the tested installer, ZIP, blockmap and `latest.yml` for automatic updates.
 
-### Windows on Arm
+The bundled upstream editor keeps its own version; desktop release versions
+advance independently. Windows builds are currently unsigned.
 
-draw.io Desktop is built natively for Windows on Arm (ARM64) and is supported on Windows 11 ARM64 devices. Two native ARM64 downloads are published with every release:
+## Credits and licence
 
-- `draw.io-arm64-<version>-windows-arm64-installer.exe` — NSIS installer, per-machine, requires administrator privileges.
-- `draw.io-arm64-<version>-windows-arm64-no-installer.exe` — portable build, no installation or admin rights needed.
-
-The MSI and Microsoft Store builds are x64 only and run under emulation on ARM64 devices. ARM64 builds up to and including 31.4.4 were shipped with auto-update disabled; install a newer release manually once, after which the ARM64 installer build updates itself like x64.
-
-Linux installation
-------------------
-
-If you manage AppImages with [AppImageLauncher](https://github.com/TheAssassin/AppImageLauncher), you need a 3.0 release of it (currently labelled beta). Since 31.4.2 the AppImage uses the static AppImage runtime so that it no longer depends on the end-of-life `libfuse2`, and AppImageLauncher 2.2.0, the last stable release, cannot load a static runtime. The app then fails to start with:
-
-```
-fuse: memory allocation failed
-squashfuse 0.5.2 (c) 2012 Dave Vasilevsky
-...
-Can't open squashfs image: Bad address
-```
-
-Install a current AppImageLauncher from its [releases page](https://github.com/TheAssassin/AppImageLauncher/releases), which provides .deb packages, or uninstall AppImageLauncher altogether. It is not needed to run the AppImage. See [#2538](https://github.com/jgraph/drawio-desktop/issues/2538) for the detail.
-
-Updates
--------
-
-How draw.io Desktop updates depends on how it was installed:
-
-- **Windows installer (`.exe`), macOS and AppImage:** new versions download in the background. When one is ready, the editor shows a notice, and clicking it or Help > Restart to Update installs it straight away. Otherwise it is installed when you quit draw.io. The Windows installer is per-machine, so the update asks for administrator rights.
-- **MSI, Windows zip, Windows ARM64 portable, deb and rpm:** draw.io tells you when a new version is available and links to its release page. Install it the same way as the current one.
-- **Microsoft Store, Snap and Flatpak:** the store updates the app, and draw.io does not check for updates.
-
-Extras > Automatic Updates (draw.io > Check for Updates Automatically on macOS) turns the background checks off. Help > Check for Updates still works. For centrally managed installs, set the `DRAWIO_DISABLE_UPDATE=true` environment variable or pass `--disable-update` to turn off all update checks, or set `DRAWIO_NO_SILENT_UPDATE=true` or pass `--no-silent-update` so that draw.io asks before it downloads an update.
-
-Security
---------
-
-draw.io Desktop is designed to be completely isolated from the Internet, apart from the update process. This checks github.com once a day for a newer version and downloads it from an AWS S3 bucket owned by Github. To disable the update check entirely (e.g. for centrally-managed installs), set the `DRAWIO_DISABLE_UPDATE=true` environment variable or pass `--disable-update` on launch. All JavaScript files are self-contained, the Content Security Policy forbids running remotely loaded JavaScript.
-
-No diagram data is ever sent externally, nor do we send any analytics about app usage externally. The Content Security Policy on the web part of the interface forbids remotely-loaded JavaScript and restricts the application's own network connections to itself, so the app cannot transmit your diagrams or otherwise phone home. Note that a diagram can reference external media - for example an image, background or font loaded from a URL embedded in the diagram - and these are fetched when the diagram is opened so that it renders correctly. Opening a diagram from an untrusted source may therefore trigger a request to the referenced URL, which can reveal metadata such as your IP address to that server; no diagram content is transmitted.
-
-Security and isolating the app are the primarily objectives of draw.io desktop. If you ask for anything that involves external connections enabled in the app by default, the answer will be no.
-
-Support
--------
-
-Support is provided on a reasonable business constraints basis, but without anything contractually binding. All support is provided via this repo. There is no private ticketing support for non-paying users.
-
-Purchasing draw.io for Confluence or Jira does not entitle you to commercial support for draw.io desktop.
-
-Developing
-----------
-
-**draw.io** is a git submodule of **drawio-desktop**. To get both you need to clone recursively:
-
-`git clone --recursive https://github.com/jgraph/drawio-desktop.git`
-
-To run this:
-1. `npm install` (in the root directory of this repo)
-2. [internal use only] export DRAWIO_ENV=dev if you want to develop/debug in dev mode.
-3. `npm start` _in the root directory of this repo_ runs the app. For debugging, use `npm start --enable-logging`.
-
-Note: If a symlink is used to refer to drawio repo (instead of the submodule), then symlink the `node_modules` directory inside `drawio/src/main/webapp` also.
-
-To fork the project, make your own changes and build an (unsigned) app for personal use, see [doc/BUILDING_FOR_PERSONAL_USE.md](doc/BUILDING_FOR_PERSONAL_USE.md).
-
-The release process (GitHub Actions builds, signing and publishing) is described in [doc/RELEASE_PROCESS.md](doc/RELEASE_PROCESS.md).
-
-Local Storage and Session Storage is stored in the AppData folder:
-
-- macOS: `~/Library/Application Support/draw.io`
-- Windows: `C:\Users\<USER-NAME>\AppData\Roaming\draw.io\`
-
-Not open-contribution
----------------------
-
-draw.io is closed to contributions (unless a maintainer permits it, which is extremely rare).
-
-The level of complexity of this project means that even simple changes 
-can break a _lot_ of other moving parts. The amount of testing required 
-is far more than it first seems. If we were to receive a PR, we'd have 
-to basically throw it away and write it how we want it to be implemented.
-
-We are grateful for community involvement, bug reports, & feature requests. We do
-not wish to come off as anything but welcoming, however, we've
-made the decision to keep this project closed to contributions for 
-the long term viability of the project.
+Based on [jgraph/drawio-desktop](https://github.com/jgraph/drawio-desktop) and the
+[draw.io editor](https://github.com/jgraph/drawio). This is an independent fork,
+licensed under GPL-3.0-only. See the repository licence and upstream notices.

@@ -3,6 +3,7 @@ import path from 'node:path';
 import {randomUUID, createHash} from 'node:crypto';
 import {setTimeout as delay} from 'node:timers/promises';
 import core from '../shared/journal-core.cjs';
+import conflicts from '../shared/conflicts.cjs';
 
 const maxFile = 16 * 1024 * 1024;
 // JSON may expand a control character into six ASCII bytes.
@@ -16,7 +17,7 @@ async function replaceFile(temp, target)
 		try { await fs.rename(temp, target); return; }
 		catch (e)
 		{
-			// OneDrive/antivirus can briefly hold a Windows file open while
+			// The filesystem or antivirus can briefly hold a Windows file open while
 			// inspecting it. Keep the complete temp file until a bounded retry.
 			if (attempt >= 5 || !['EACCES', 'EBUSY', 'EPERM'].includes(e.code)) throw e;
 			await delay(25 * (2 ** attempt));
@@ -24,7 +25,7 @@ async function replaceFile(temp, target)
 	}
 }
 
-export class SharedFolder
+export class JournalStore
 {
 	constructor(filename, clientId)
 	{
@@ -125,14 +126,15 @@ export class SharedFolder
 			try { await this.readJson('snapshot-' + hash + '.json', 1024 * 1024); }
 			catch
 			{
-				throw new Error('The .drawio file changed outside collaboration, or its sync records have not downloaded yet. Preserve that copy and wait for OneDrive before retrying.');
+				throw new Error('The server map changed outside collaboration. Preserve that copy and restore a consistent server backup before retrying.');
 			}
 		}
 		return current;
 	}
 
-	async scan()
+	async scan(audit = false)
 	{
+		if (this.loaded && !audit) return [...this.cache.values()];
 		const manifest = await this.readJson('manifest.json', maxManifest);
 		if (manifest.room !== this.manifest.room || manifest.base !== this.manifest.base)
 		{
@@ -154,7 +156,7 @@ export class SharedFolder
 			core.validate(op, this.manifest.room);
 			if (this.cache.has(op.id) && JSON.stringify(this.cache.get(op.id)) !== JSON.stringify(op))
 			{
-				throw new Error('A saved edit was modified. Restore its original version in SharePoint.');
+				throw new Error('A saved edit was modified. Restore the original record from a server backup.');
 			}
 			this.cache.set(op.id, op);
 			current.add(op.id);
@@ -162,8 +164,9 @@ export class SharedFolder
 		}
 		if ([...this.cache.keys()].some(id => !current.has(id)))
 		{
-			throw new Error('Saved edits are missing. Wait for OneDrive or restore the collaboration folder.');
+			throw new Error('Saved edits are missing. Restore the server edit history from a backup.');
 		}
+		this.loaded = true;
 		return [...this.cache.values()];
 	}
 
@@ -172,6 +175,7 @@ export class SharedFolder
 		const write = async () =>
 		{
 			await this.scan();
+			if (this.cache.size >= 10000) throw new Error('Edit history limit reached. Save an archive copy before starting a new shared map.');
 			const ordered = core.order([...this.cache.values()], this.manifest.room);
 			const ready = new Set(ordered.ready.map(op => op.id));
 			if (!Array.isArray(parents) || !parents.every(id => ready.has(id)))
@@ -181,6 +185,8 @@ export class SharedFolder
 			const op = {version: 1, room: this.manifest.room, id: operationId,
 				author: this.author, name: String(name || 'Editor').slice(0, 80),
 				clock: ++this.clock, parents, patch};
+			const overlapping = conflicts.detect([...this.cache.values()], parents, patch, this.author);
+			if (overlapping.length) op.conflicts = overlapping;
 			core.validate(op, this.manifest.room);
 			await this.immutable('edit-' + op.id + '.json', op);
 			this.cache.set(op.id, op);
@@ -202,9 +208,7 @@ export class SharedFolder
 		if (current === xml) return true;
 		const hashOf = text => createHash('sha256').update(text).digest('hex');
 		await this.immutable('snapshot-' + hashOf(xml) + '.json', {heads}).catch(e => { if (e.code !== 'EEXIST') throw e; });
-		// The .drawio file is a materialized view. Concurrent OneDrive versions
-		// are harmless to the authoritative immutable journal, which is replayed
-		// on every join. Never use this file as an operation source after joining.
+		// The .drawio file is a materialized view. The authoritative immutable journal is replayed on every join. Never use this file as an operation source after joining.
 		const temp = path.join(path.dirname(this.filename), '.sharemap-' + randomUUID() + '.tmp');
 		const handle = await fs.open(temp, 'wx');
 		try
@@ -217,98 +221,19 @@ export class SharedFolder
 		return true;
 	}
 
-	async shareLink(value)
-	{
-		const validateLink = text =>
-		{
-			const link = new URL(text);
-			if (link.protocol !== 'https:' || link.username || link.password ||
-				!(/^[a-z0-9-]+\.sharepoint\.com$/i.test(link.hostname)) || link.href.length > 4096)
-			{
-				throw new Error('Use an HTTPS SharePoint folder link');
-			}
-			return link.href;
-		};
-		const names = (await fs.readdir(this.directory)).filter(name => /^link-[a-f0-9]{64}\.json$/.test(name)).sort();
-		let latest = {url: '', updated: 0};
-		for (const name of names)
-		{
-			const record = await this.readJson(name, 32768);
-			const updated = Number.isSafeInteger(record.updated) && record.updated >= 0 ? record.updated : 0;
-			if (updated >= latest.updated) latest = {url: validateLink(record.url), updated};
-		}
-		if (value == null) return latest.url;
-		const record = {url: validateLink(value), updated: Math.max(Date.now(), latest.updated + 1), id: randomUUID()};
-		const hash = createHash('sha256').update(JSON.stringify(record)).digest('hex');
-		await this.immutable('link-' + hash + '.json', record);
-		return record.url;
-	}
-
-	async activity(name, page, selection)
-	{
-		const value = {version: 1, room: this.manifest.room, author: this.author,
-			client: this.client,
-			name: String(name || 'Editor').slice(0, 80), updated: Date.now(),
-			page: String(page || '').slice(0, 200),
-			selection: Array.isArray(selection) ? selection.filter(id => typeof id === 'string').slice(0, 30).map(id => id.slice(0, 200)) : []};
-		const target = await this.safePath('presence-' + this.author + '.json');
-		const temp = await this.safePath('presence-' + this.author + '-' + randomUUID() + '.tmp');
-		try
-		{
-			await fs.writeFile(temp, JSON.stringify(value), {flag: 'wx'});
-			await replaceFile(temp, target);
-		}
-		finally { await fs.unlink(temp).catch(() => {}); }
-		return this.readPresence();
-	}
-
-	async readPresence(all = false)
-	{
-		const names = (await fs.readdir(this.directory)).filter(name => /^presence-[a-f0-9-]{36}\.json$/.test(name)).slice(0, 1000);
-		const active = [];
-		for (const name of names)
-		{
-			try
-			{
-				const peer = await this.readJson(name, 16384);
-				if (core.validId(peer.room) && (all || peer.room === this.manifest.room) && core.validId(peer.author) &&
-					(peer.client == null || core.validId(peer.client)) &&
-					typeof peer.name === 'string' && peer.name.length <= 80 &&
-					Number.isSafeInteger(peer.updated) && (all || Math.abs(Date.now() - peer.updated) < 90000) &&
-					Array.isArray(peer.selection) && peer.selection.length <= 30 && peer.selection.every(id => typeof id === 'string')) active.push(peer);
-			}
-			catch { /* A partially downloaded heartbeat must not stop durable saves. */ }
-		}
-		if (all) return active;
-		const clients = new Map();
-		for (const peer of active.sort((a, b) => b.updated - a.updated || (a.author < b.author ? -1 : 1)))
-		{
-			const key = peer.client || peer.author;
-			if (!clients.has(key)) clients.set(key, peer);
-		}
-		return [...clients.values()];
-	}
-
 	async diagnostics()
 	{
 		let records = [];
 		let error = null;
-		try { records = await this.scan(); }
+		try { records = await this.scan(true); }
 		catch (e) { error = e.message; }
 		const ordered = core.order(records, this.manifest.room);
-		const presence = await this.readPresence(true);
 		return {version: 1, observedAt: new Date().toISOString(), localPath: this.filename,
 			room: this.manifest.room, client: this.client, author: this.author, error,
 			edits: {count: records.length, pending: ordered.pending, heads: ordered.heads,
 				fingerprint: createHash('sha256').update(records.map(op => op.id).sort().join('\n')).digest('hex'),
 				recent: [...records].sort(core.compare).slice(-30).map(op => ({id: op.id, author: op.author, name: op.name, clock: op.clock}))},
-			presence: presence.map(peer => ({author: peer.author, client: peer.client, name: peer.name,
-				room: peer.room, updated: peer.updated, ageSeconds: Math.round((Date.now() - peer.updated) / 1000)}))};
+			presence: []};
 	}
 
-	async leave()
-	{
-		const target = await this.safePath('presence-' + this.author + '.json');
-		await fs.unlink(target).catch(e => { if (e.code !== 'ENOENT') throw e; });
-	}
 }

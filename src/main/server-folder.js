@@ -83,11 +83,15 @@ export class ServerFolder
 		this.client = client || randomUUID();
 		this.author = randomUUID();
 		this.transport = 'server';
+		this.records = new Map();
+		this.stats = {requests: 0, lastRoundTripMs: 0};
 	}
 	async request(action, body = {})
 	{
-		return serverRequest(this.connection, '/v1/maps/' + this.connection.room + '/' + action,
-			{...body, author: this.author, client: this.client});
+		const started = Date.now();
+		try { return await serverRequest(this.connection, '/v1/maps/' + this.connection.room + '/' + action,
+			{...body, author: this.author, client: this.client}); }
+		finally { this.stats.requests++; this.stats.lastRoundTripMs = Date.now() - started; }
 	}
 	async open()
 	{
@@ -102,10 +106,25 @@ export class ServerFolder
 		}
 		const info = await this.request('open');
 		this.manifest = info.manifest;
+		this.incremental = !!info.capabilities?.incrementalSync;
 		return {...info, author: this.author, client: this.client, transport: this.transport,
 			server: this.connection.server, owner: !!this.connection.ownerToken};
 	}
-	scan() { return this.request('scan'); }
+	async updates()
+	{
+		if (!this.incremental) return this.request('scan');
+		const update = await this.request('sync', {cursor: this.cursor || 0, epoch: this.epoch});
+		for (const op of update.records) core.validate(op, this.manifest.room);
+		this.cursor = update.cursor;
+		this.epoch = update.epoch;
+		this.peers = update.peers;
+		return update.records;
+	}
+	async scan()
+	{
+		for (const op of await this.updates()) this.records.set(op.id, op);
+		return [...this.records.values()];
+	}
 	async append(patch, parents, name, operationId)
 	{
 		const record = {patch, parents, name, operationId: operationId || randomUUID(), author: this.author, client: this.client};
@@ -116,7 +135,7 @@ export class ServerFolder
 		return result;
 	}
 	snapshot(xml, heads) { return this.request('snapshot', {xml, heads}); }
-	activity(name, page, selection) { return this.request('activity', {name, page, selection}); }
+	activity(name, page, selection, editing, editingCell) { return this.request('activity', {name, page, selection, editing, editingCell}); }
 	leave() { return this.request('leave'); }
 	diagnostics() { return this.request('diagnostics'); }
 	async shareLink() { return shareInvite(this.connection); }
@@ -155,6 +174,27 @@ export class ServerMaps
 		return filename;
 	}
 	async join(invite, client) { return this.cache(parseInvite(invite), client); }
+	async restoreRoom(room)
+	{
+		if (!core.validId(room)) throw new Error('Invalid shared-map shortcut');
+		let connection;
+		try { connection = JSON.parse(await fs.readFile(path.join(this.directory, room, 'connection.json'), 'utf8')); }
+		catch { throw new Error('Join this shared map once using its invitation link, then reopen the shortcut.'); }
+		const files = await fs.readdir(path.join(this.directory, room));
+		const name = files.find(name => /^Map - .*\.drawio$/i.test(name));
+		return name ? path.join(this.directory, room, name) : this.cache(connection);
+	}
+	async restorePath(filename)
+	{
+		try { await fs.access(filename); return; }
+		catch (error) { if (error.code !== 'ENOENT') throw error; }
+		const folder = await this.open(filename);
+		if (folder)
+		{
+			const info = await folder.open();
+			await fs.writeFile(filename, info.manifest.base, {flag: 'wx'}).catch(error => { if (error.code !== 'EEXIST') throw error; });
+		}
+	}
 	async create({xml, name}, client)
 	{
 		let setup;

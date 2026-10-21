@@ -39,7 +39,6 @@ jobs:
           "TEMP=${{ runner.temp }}" >> $env:GITHUB_ENV
           "TMP=${{ runner.temp }}" >> $env:GITHUB_ENV
       - run: npm test
-      - run: npm run test:shared-ui
       - run: npm run test:server-ui
       - run: npm run build:sync
       - name: Verify installer and file associations
@@ -54,7 +53,7 @@ jobs:
           path: |
             dist/sync/*-setup.exe
             dist/sync/*.zip
-            dist/sync/*.yml
+            dist/sync/latest*.yml
             dist/sync/*.blockmap
 
   publish:

@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {randomBytes, randomUUID, createHash, timingSafeEqual} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
-import {SharedFolder} from '../main/shared-folder.js';
+import {JournalStore} from './journal-store.js';
 import core from '../shared/journal-core.cjs';
 
 const hash = value => createHash('sha256').update(String(value)).digest('hex');
@@ -46,6 +46,33 @@ export async function createCollaborationServer({directory, key, cert, adminToke
 	check(typeof adminToken === 'string' && adminToken.length >= 40, 'Set a strong administrator token');
 	await fs.mkdir(directory, {recursive: true, mode: 0o700});
 	const queues = new Map();
+	const rooms = new Map();
+	const lastUsed = new Map();
+	const epoch = randomUUID();
+	async function roomFor(id)
+	{
+		lastUsed.set(id, Date.now());
+		if (!rooms.has(id)) rooms.set(id, (async () =>
+		{
+			const roomDir = path.join(directory, id);
+			const access = JSON.parse(await fs.readFile(path.join(roomDir, 'access.json'), 'utf8'));
+			const folder = new JournalStore(path.join(roomDir, 'map.drawio'));
+			await folder.open();
+			const records = (await folder.scan()).sort(core.compare);
+			return {folder, access, records, presence: new Map()};
+		})().catch(error => { rooms.delete(id); lastUsed.delete(id); throw error; }));
+		return rooms.get(id);
+	}
+	function peers(room)
+	{
+		const clients = new Map();
+		for (const peer of [...room.presence.values()].sort((a, b) => b.updated - a.updated))
+		{
+			if (Date.now() - peer.updated > 35000) room.presence.delete(peer.author);
+			else if (!clients.has(peer.client)) clients.set(peer.client, peer);
+		}
+		return [...clients.values()];
+	}
 	async function serial(id, action)
 	{
 		const previous = queues.get(id) || Promise.resolve();
@@ -82,7 +109,7 @@ export async function createCollaborationServer({directory, key, cert, adminToke
 				const xml = input.xml.replace(/(<mxfile\b[^>]*)(>)/, tag => tag.replace(/\s+sharemap-(?:room|heads)="[^"]*"/g, ''));
 				const filename = path.join(roomDir, 'map.drawio');
 				await fs.writeFile(filename, xml, {mode: 0o600, flag: 'wx'});
-				const folder = new SharedFolder(filename);
+				const folder = new JournalStore(filename);
 				await folder.open(xml);
 				const editToken = secret();
 				const ownerToken = secret();
@@ -91,52 +118,74 @@ export async function createCollaborationServer({directory, key, cert, adminToke
 				res.end(JSON.stringify({room: id, token: editToken, ownerToken, name}));
 				return;
 			}
-			const match = /^\/v1\/maps\/([a-f0-9-]{36})\/(open|scan|append|snapshot|activity|leave|diagnostics|rotate)$/.exec(req.url);
+			const match = /^\/v1\/maps\/([a-f0-9-]{36})\/(open|scan|sync|append|snapshot|activity|leave|diagnostics|rotate)$/.exec(req.url);
 			check(match && core.validId(match[1]), 'Endpoint not found', 404);
 			const [, id, action] = match;
 			const roomDir = path.join(directory, id);
-			let access;
-			try { access = JSON.parse(await fs.readFile(path.join(roomDir, 'access.json'), 'utf8')); }
+			let room;
+			try { room = await roomFor(id); }
 			catch { throw Object.assign(new Error('Map is unavailable'), {status: 404}); }
-			const owner = equal(hash(token), access.ownerHash);
-			check(owner || equal(hash(token), access.editHash), 'This link was revoked or access is unavailable', 401);
+			const authorize = () =>
+			{
+				const owner = equal(hash(token), room.access.ownerHash);
+				check(owner || equal(hash(token), room.access.editHash), 'This link was revoked or access is unavailable', 401);
+				return owner;
+			};
+			authorize();
 			const input = await readBody(req);
 			check(core.validId(input.author) && core.validId(input.client), 'Invalid editor identity');
 			const result = await serial(id, async () =>
 			{
-				const folder = new SharedFolder(path.join(roomDir, 'map.drawio'), input.client);
-				await folder.open();
+				const owner = authorize();
+				const {folder} = room;
 				folder.author = input.author;
+				folder.client = input.client;
 				switch (action)
 				{
-					case 'open': return {manifest: folder.manifest, name: access.name};
-					case 'scan': return folder.scan();
+					case 'open': return {manifest: folder.manifest, name: room.access.name, capabilities: {incrementalSync: true, livePresence: true, conflicts: true}};
+					case 'scan': return room.records;
+					case 'sync':
+					{
+						const from = input.epoch === epoch && Number.isSafeInteger(input.cursor) && input.cursor >= 0 && input.cursor <= room.records.length ? input.cursor : 0;
+						return {epoch, cursor: room.records.length, records: room.records.slice(from), peers: peers(room)};
+					}
 					case 'append':
 					{
 						check(core.validId(input.operationId), 'Invalid operation identity');
-						const records = await folder.scan();
-						const previous = records.find(op => op.id === input.operationId);
+						const previous = folder.cache.get(input.operationId);
 						if (previous)
 						{
 							check(previous.author === input.author && JSON.stringify(previous.patch) === JSON.stringify(input.patch) && JSON.stringify(previous.parents) === JSON.stringify(input.parents), 'Operation identity was reused with different edits', 409);
 							return previous;
 						}
-						return folder.append(input.patch, input.parents, input.name, input.operationId);
+						const op = await folder.append(input.patch, input.parents, input.name, input.operationId);
+						room.records.push(op);
+						return op;
 					}
 					case 'snapshot': return folder.snapshot(input.xml, input.heads);
-					case 'activity': return folder.activity(input.name, input.page, input.selection);
-					case 'leave': await folder.leave(); return true;
+					case 'activity':
+					{
+						room.presence.set(input.author, {version: 1, room: folder.manifest.room, author: input.author, client: input.client,
+							name: String(input.name || 'Editor').slice(0, 80), updated: Date.now(), page: String(input.page || '').slice(0, 200),
+							selection: Array.isArray(input.selection) ? input.selection.filter(id => typeof id === 'string').slice(0, 30).map(id => id.slice(0, 200)) : [],
+							editing: !!input.editing, editingCell: String(input.editingCell || '').slice(0, 200)});
+						return peers(room);
+					}
+					case 'leave': room.presence.delete(input.author); return true;
 					case 'diagnostics':
 					{
 						const report = await folder.diagnostics();
 						delete report.localPath;
-						return {...report, transport: 'server', serverBuild: '32.5.6'};
+						return {...report, presence: peers(room).map(({selection: _selection, page: _page, ...peer}) => ({...peer, editingCell: undefined, ageSeconds: Math.round((Date.now() - peer.updated) / 1000)})),
+							transport: 'server', serverBuild: '32.5.7'};
 					}
 					case 'rotate':
 					{
 						check(owner, 'Only the map owner can revoke sharing links', 403);
 						const newToken = secret();
-						await writeJson(path.join(roomDir, 'access.json'), {...access, editHash: hash(newToken)});
+						const updated = {...room.access, editHash: hash(newToken)};
+						await writeJson(path.join(roomDir, 'access.json'), updated);
+						room.access = updated;
 						return {token: newToken};
 					}
 				}
@@ -154,6 +203,16 @@ export async function createCollaborationServer({directory, key, cert, adminToke
 	server.requestTimeout = 30000;
 	server.headersTimeout = 10000;
 	server.maxConnections = 100;
+	const sweep = setInterval(() =>
+	{
+		for (const [id, used] of lastUsed) if (Date.now() - used > 300000 && !queues.has(id))
+		{
+			rooms.delete(id);
+			lastUsed.delete(id);
+		}
+	}, 60000);
+	sweep.unref();
+	server.on('close', () => clearInterval(sweep));
 	return server;
 }
 
