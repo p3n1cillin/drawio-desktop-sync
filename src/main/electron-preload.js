@@ -3,6 +3,19 @@ const {
     ipcRenderer
 } = require("electron");
 
+// Restore before the editor reads settings, even if Chromium storage changed.
+try
+{
+	const saved = ipcRenderer.sendSync('editor-preferences', {action: 'read'});
+	if (saved.error) throw new Error(saved.error);
+	for (const [key, value] of Object.entries(saved.entries))
+	{
+		if (value === null) window.localStorage.removeItem(key);
+		else if (window.localStorage.getItem(key) !== value) window.localStorage.setItem(key, value);
+	}
+}
+catch (error) { console.error('Could not restore editor preferences:', error); }
+
 // One-shot migration: when the main process determines this is the first
 // launch with the new defaultAdaptiveColors behaviour, it passes the chosen
 // mode here via webPreferences.additionalArguments. We seed it into the
@@ -86,6 +99,11 @@ ipcRenderer.on('fileChanged', (event, resp) =>
 
 contextBridge.exposeInMainWorld(
     'electron', {
+		persistPreferences: entries =>
+		{
+			const result = ipcRenderer.sendSync('editor-preferences', {action: 'write', entries});
+			if (result.error) throw new Error(result.error);
+		},
 		sharedFolder: (request) => ipcRenderer.invoke('shared-folder', request),
         request: (msg, callback, error) => 
 		{

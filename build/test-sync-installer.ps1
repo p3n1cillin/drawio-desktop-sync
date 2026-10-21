@@ -10,6 +10,16 @@ if (Test-Path -LiteralPath $appKey) { throw 'Installer test requires an account 
 $previousClass = if (Test-Path -LiteralPath $extensionPath) { (Get-Item -LiteralPath $extensionPath).GetValue('') } else { $null }
 $installedExe = Join-Path $testDirectory 'drawio-desktop-sync.exe'
 $uninstaller = Join-Path $testDirectory 'Uninstall drawio-desktop-sync.exe'
+$profileDirectory = Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'drawio-desktop-sync'
+$profileFixtures = @{'config.json' = '{"dontCheckUpdates":true,"updateCheckIntervalHours":6}';
+	'editor-preferences.json' = '{"entries":{".configuration":"{\"zoomWheel\":false,\"enablePositionGuides\":false}"}}';
+	'server-setup.json' = '{"server":"https://fixture.invalid:9443","adminToken":"installer-test-only"}'}
+$profileOriginals = @{}
+foreach ($name in $profileFixtures.Keys)
+{
+	$profileFile = Join-Path $profileDirectory $name
+	$profileOriginals[$name] = if (Test-Path -LiteralPath $profileFile) { [IO.File]::ReadAllBytes($profileFile) } else { $null }
+}
 
 function Assert-Equal($Actual, $Expected, [string]$Label)
 {
@@ -68,11 +78,15 @@ public static class SyncAssociationProbe {
 	Assert-Equal $result ([uint32]0) 'Windows handler resolution'
 	Assert-Equal $resolved.ToString() $installedExe 'Windows resolved application'
 	Write-Output 'PASS: installer, shortcuts, Open with, Default apps and quoted file handler'
+	New-Item -ItemType Directory -Path $profileDirectory -Force | Out-Null
+	foreach ($name in $profileFixtures.Keys) { [IO.File]::WriteAllText((Join-Path $profileDirectory $name), $profileFixtures[$name]) }
 
 	Install-TestApp
 	Assert-Equal (Get-Item -LiteralPath $extensionPath).GetValue('') $classId 'Upgraded diagram handler'
 	Assert-Equal (Get-Item -LiteralPath ($appKey + '\Installer')).GetValue('PreviousDrawioClass') ([string]$previousClass) 'Backup retained after reinstall'
 	Write-Output 'PASS: reinstall preserves the original handler backup'
+	foreach ($name in $profileFixtures.Keys) { Assert-Equal ([IO.File]::ReadAllText((Join-Path $profileDirectory $name))) $profileFixtures[$name] ('Upgrade preserves ' + $name) }
+	Write-Output 'PASS: upgrade preserves native settings, editor configuration and server setup'
 
 	Uninstall-TestApp
 	$restored = if (Test-Path -LiteralPath $extensionPath) { (Get-Item -LiteralPath $extensionPath).GetValue('') } else { $null }
@@ -80,10 +94,17 @@ public static class SyncAssociationProbe {
 	if (Test-Path -LiteralPath $appKey) { throw 'Fork capability registration was not removed' }
 	if ((Get-Item -LiteralPath 'HKCU:\Software\RegisteredApplications').GetValue('drawio-desktop-sync')) { throw 'RegisteredApplications entry was not removed' }
 	Write-Output 'PASS: uninstall removes fork registrations and restores the previous handler'
+	foreach ($name in $profileFixtures.Keys) { Assert-Equal ([IO.File]::ReadAllText((Join-Path $profileDirectory $name))) $profileFixtures[$name] ('Uninstall preserves ' + $name) }
 }
 finally
 {
 	Uninstall-TestApp
+	foreach ($name in $profileFixtures.Keys)
+	{
+		$profileFile = Join-Path $profileDirectory $name
+		if ($null -ne $profileOriginals[$name]) { [IO.File]::WriteAllBytes($profileFile, $profileOriginals[$name]) }
+		elseif (Test-Path -LiteralPath $profileFile) { Remove-Item -LiteralPath $profileFile -Force }
+	}
 	# Only the UUID directory created by this test may be removed.
 	$resolvedTest = [IO.Path]::GetFullPath($testDirectory)
 	$resolvedTemp = [IO.Path]::GetFullPath($env:TEMP).TrimEnd('\') + '\'

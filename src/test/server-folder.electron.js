@@ -147,6 +147,11 @@ try
 	assert.equal(await b('testUi.editor.graph.model.getCell("desk").value'), before);
 	await a('new Promise((resolve,reject)=>testUi.getCurrentFile().save(false,resolve,reject)).then(()=>true)');
 	await until(() => b('testUi.editor.graph.model.getCell("desk").value === "Manual save while paused"'), 'manual save with AutoSave off');
+	const pausedSession = await a('testUi.sharedFolder.getSession().id');
+	await a('testUi.loadArgs({args:[' + JSON.stringify(filename) + ']});true');
+	await until(() => a('testUi.sharedFolder.getSession()?.initialized && testUi.sharedFolder.getSession().id !== ' + JSON.stringify(pausedSession)), 'reopened paused map');
+	assert.equal(await a('testUi.sharedFolder.getSession().paused'), true);
+	console.log('PASS: the shared-map AutoSave preference survives reopening the map');
 	await a(pause);
 	console.log('PASS: AutoSave off preserves local changes and Ctrl+S still publishes');
 	await a('testUi.editor.graph.model.setValue(testUi.editor.graph.model.getCell("peer"),"Undo this");true');
@@ -158,6 +163,96 @@ try
 	await until(() => a('!testUi.sharedFolder.getSession() && testUi.editor.graph.isEnabled()'), 'ordinary Save As');
 	assert.doesNotMatch(await fs.readFile(copyFile, 'utf8'), /sharemap-room=/);
 	console.log('PASS: Save As produces an independent ordinary diagram and leaves server mode');
+	await a(`(() => {
+		window.configurationMarker = {};
+		window.configurationModelChanges = 0;
+		testUi.editor.graph.model.addListener(mxEvent.CHANGE, () => window.configurationModelChanges++);
+		testUi.actions.get('configuration').funct();
+		const root = document.querySelector('.geDialog');
+		const tab = [...root.querySelectorAll('div')].find(node => node.textContent === mxResources.get('formatJson') && node.style.cursor === 'pointer');
+		if (!tab) throw Error('JSON tab was not found');
+		tab.click();
+		const input = [...root.querySelectorAll('textarea')].find(node => node.offsetParent !== null);
+		input.value = JSON.stringify({...JSON.parse(localStorage.getItem(Editor.configurationKey) || '{}'),
+			enablePositionGuides:false,enableDistanceGuides:false,enableSizeGuides:false,
+			defaultConnectable:false,defaultConnectionArrowsEnabled:false,copyOnConnect:true,
+			defaultFoldingEnabled:false,defaultTransparentGroups:true,zoomWheel:false,
+			defaultGridSize:17,gridSteps:7,compact:true,updateDefaultStyle:true,simpleLabels:true});
+		input.dispatchEvent(new Event('input', {bubbles:true}));
+		[...root.querySelectorAll('button')].find(button => button.textContent === mxResources.get('apply')).click();
+		return true;
+	})()`);
+	const liveOptions = `!!testUi.livePreferences && mxGuide.prototype.positionEnabled === false &&
+		mxGuide.prototype.distanceEnabled === false && mxVertexHandler.prototype.sizeGuidesEnabled === false &&
+		!testUi.editor.graph.connectionHandler.isEnabled() && !testUi.editor.graph.connectionArrowsEnabled &&
+		testUi.editor.graph.connectionHandler.createTarget && !testUi.editor.graph.foldingEnabled &&
+		Editor.defaultTransparentGroups && !Graph.zoomWheel && testUi.editor.graph.gridSize === 17 &&
+		testUi.editor.graph.view.gridSteps === 7 && testUi.compactMode && testUi.updateDefaultStyle && Editor.simpleLabels`;
+	await until(() => a(liveOptions), 'live visual/JSON configuration');
+	assert.equal(await a('!!window.configurationMarker && window.configurationModelChanges === 0 && !testUi.dialog'), true, 'Apply does not reload, edit the model or ask for a restart');
+	await until(() => b(liveOptions), 'configuration reaches another open editor');
+	const preferences = JSON.parse(await fs.readFile(path.join(userData, 'editor-preferences.json'), 'utf8'));
+	assert.equal(JSON.parse(preferences.entries['.configuration']).enablePositionGuides, false);
+	console.log('PASS: the actual Configuration dialog applies guides, connections, folding, wheel zoom, compact UI and grid live across open editors without diagram changes');
+	await a(`(() => {
+		testUi.actions.get('configuration').funct();
+		const root = document.querySelector('.geDialog');
+		const toggle = root.querySelector('[data-key="enablePositionGuides"]');
+		if (!toggle) throw Error('Visual guide control was not found');
+		const on = [...toggle.querySelectorAll('button')].find(button => button.dataset.value === 'true');
+		if (!on) throw Error('Visual On button was not found');
+		on.click();
+		toggle.scrollIntoView({block:'center'});
+		return true;
+	})()`);
+	if (process.env.DRAWIO_SETTINGS_SCREENSHOT)
+	{
+		const throttled = first.webContents.getBackgroundThrottling();
+		first.webContents.setBackgroundThrottling(false);
+		await new Promise(resolve => setTimeout(resolve, 250));
+		await fs.writeFile(process.env.DRAWIO_SETTINGS_SCREENSHOT, (await first.webContents.capturePage()).toPNG());
+		first.webContents.setBackgroundThrottling(throttled);
+	}
+	await a('[...document.querySelector(".geDialog").querySelectorAll("button")].find(button=>button.textContent===mxResources.get("apply")).click();true');
+	await until(() => a('mxGuide.prototype.positionEnabled === true && !testUi.dialog'), 'visual Editor toggle applies live');
+	console.log('PASS: the visual Editor tab applies its On/Off controls without a restart prompt');
+	const priorSpellCheck = first.webContents.session.isSpellCheckerEnabled();
+	await a('testUi.actions.get("spellCheck").funct();true');
+	await until(() => first.webContents.session.isSpellCheckerEnabled() !== priorSpellCheck, 'live spell checker');
+	assert.equal(await a('testUi.actions.get("spellCheck").isSelected()'), !priorSpellCheck);
+	await until(async () => await b('testUi.actions.get("spellCheck").isSelected()') === !priorSpellCheck, 'other editor spell checker menu');
+	assert.equal(await a('!testUi.dialog'), true);
+	console.log('PASS: spell checking and its menu state change live in existing editor windows');
+	const beforeInvalid = await a('localStorage.getItem(Editor.configurationKey)');
+	assert.equal(await a('(()=>{try{localStorage.setItem(Editor.configurationKey,"[]");return false}catch{return true}})()'), true);
+	assert.equal(await a('localStorage.getItem(Editor.configurationKey)'), beforeInvalid);
+	console.log('PASS: invalid configuration cannot replace the last saved valid settings');
+	const originalTemplate = await a('Editor.config.templateFile || null');
+	await a(`(() => {
+		testUi.actions.get('configuration').funct();
+		const root = document.querySelector('.geDialog');
+		[...root.querySelectorAll('div')].find(node => node.textContent === mxResources.get('formatJson') && node.style.cursor === 'pointer').click();
+		const input = [...root.querySelectorAll('textarea')].find(node => node.offsetParent !== null);
+		input.value = JSON.stringify({...JSON.parse(input.value),templateFile:'file:///not-authorized-by-a-runtime-setting.json'});
+		input.dispatchEvent(new Event('input',{bubbles:true}));
+		[...root.querySelectorAll('button')].find(button => button.textContent === mxResources.get('apply')).click();
+		return true;
+	})()`);
+	assert.equal(await a('document.querySelector(".geDialog")?.innerText.includes("new editor window")'), true);
+	assert.equal(await a('Editor.config.templateFile || null'), originalTemplate);
+	await a('testUi.hideDialog();localStorage.setItem(Editor.configurationKey,' + JSON.stringify(beforeInvalid) + ');true');
+	console.log('PASS: startup-only file configuration is saved with a clear notice and does not widen current file access');
+	await first.webContents.session.clearStorageData({storages: ['localstorage']});
+	await a('electron.sendMessage("newfile", {});true');
+	const third = await until(() => BrowserWindow.getAllWindows().find(win => win.id !== first.id && win.id !== second.id), 'fresh editor after storage loss');
+	const c = await attach(third);
+	await until(() => c('!!testUi.livePreferences'), 'preferences restored before boot');
+	assert.equal(await c('JSON.parse(localStorage.getItem(Editor.configurationKey)).defaultGridSize'), 17);
+	assert.equal(await c('mxGuide.prototype.positionEnabled === true && mxGuide.prototype.distanceEnabled === false && Graph.zoomWheel === false'), true);
+	console.log('PASS: configuration and user preferences restore before editor boot after Chromium storage is cleared');
+	await c('localStorage.removeItem(Editor.configurationKey);true');
+	assert.equal(JSON.parse(await fs.readFile(path.join(userData, 'editor-preferences.json'), 'utf8')).entries['.configuration'], null);
+	console.log('PASS: resetting Configuration is durable and cannot restore an older saved configuration');
 	result = 0;
 }
 catch (error)
@@ -166,6 +261,7 @@ catch (error)
 	for (const win of BrowserWindow.getAllWindows())
 	{
 		try { console.error(await win.webContents.executeJavaScript('JSON.stringify({editing:testUi.editor.graph.isEditing(),editingCell:testUi.editor.graph.cellEditor?.editingCell?.id,peers:testUi.sharedFolder.getSession()?.lastPeers,note:document.querySelector(".geSyncEditingNote")?.textContent,error:testUi.sharedFolder.getSession()?.error?.message})')); } catch {}
+		try { console.error(await win.webContents.executeJavaScript('JSON.stringify({configuration:localStorage.getItem(Editor.configurationKey),live:testUi.livePreferences?.getResult(),position:mxGuide.prototype.positionEnabled,distance:mxGuide.prototype.distanceEnabled,size:mxVertexHandler.prototype.sizeGuidesEnabled,connectable:testUi.editor.graph.connectionHandler.isEnabled(),arrows:testUi.editor.graph.connectionArrowsEnabled,copy:testUi.editor.graph.connectionHandler.createTarget,folding:testUi.editor.graph.foldingEnabled,transparent:Editor.defaultTransparentGroups,wheel:Graph.zoomWheel,grid:testUi.editor.graph.gridSize,steps:testUi.editor.graph.view.gridSteps,compact:testUi.compactMode,style:testUi.updateDefaultStyle,simple:Editor.simpleLabels,dialog:document.querySelector(".geDialog")?.innerText})')); } catch {}
 	}
 }
 finally

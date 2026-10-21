@@ -4,7 +4,7 @@ import {randomUUID} from 'node:crypto';
 import {userInfo} from 'node:os';
 
 export function registerSharedFolder({ipcMain, validateSender, assertWritablePath, clipboard,
-	clientId, serverMaps, confirmServer = async () => false, blessServerMap = () => {}, createShortcut = () => null})
+	clientId, serverMaps, clientBuild = 'unknown', confirmServer = async () => false, blessServerMap = () => {}, createShortcut = () => null})
 {
 	const owners = new Map();
 	const initialThrottling = new WeakMap();
@@ -78,7 +78,7 @@ export function registerSharedFolder({ipcMain, validateSender, assertWritablePat
 			case 'diagnostics':
 			{
 				const report = await folder.diagnostics();
-				report.clientBuild = '32.5.7';
+				report.clientBuild = clientBuild;
 				report.server = folder.connection.server;
 				report.connection = folder.stats;
 				report.backgroundThrottling = event.sender.getBackgroundThrottling();
@@ -98,7 +98,9 @@ export function registerSharedFolder({ipcMain, validateSender, assertWritablePat
 
 export async function sharedFolderScript(baseDirectory)
 {
-	return (await fs.readFile(path.join(baseDirectory, '../shared/journal-core.cjs'), 'utf8')) + '\n' +
+	return (await fs.readFile(path.join(baseDirectory, '../shared/preference-keys.cjs'), 'utf8')) + '\n' +
+		(await fs.readFile(path.join(baseDirectory, '../renderer/preferences.js'), 'utf8')) + '\n' +
+		(await fs.readFile(path.join(baseDirectory, '../shared/journal-core.cjs'), 'utf8')) + '\n' +
 		(await fs.readFile(path.join(baseDirectory, '../shared/conflicts.cjs'), 'utf8')) + '\n' +
 		(await fs.readFile(path.join(baseDirectory, '../renderer/shared-folder.js'), 'utf8'));
 }
