@@ -56,6 +56,11 @@ includes edit IDs/counts, heartbeat ages, editor state and Windows Cloud Files
 sync flags; it contains no diagram XML or cell content. Windows `inSync` refers
 to that PC's provider state and does not confirm receipt on another PC.
 
+Shared sessions disable Electron background timer throttling so polling and
+heartbeats continue while the map is covered or minimized. The prior setting is
+restored after the last shared session in that window closes. Windows sleep,
+network availability and OneDrive delivery can still delay changes.
+
 Keep `Map.drawio.collab` beside `Map.drawio`; OneDrive must sync both.
 
 - The immutable manifest contains the starting diagram, room ID and original

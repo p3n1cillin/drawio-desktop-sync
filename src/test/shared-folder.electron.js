@@ -100,6 +100,9 @@ try
 	await b('testUi.loadArgs({args:[' + JSON.stringify(remoteFile) + ']}); true');
 	await until(() => b('!!(testUi.sharedFolder.getSession() && testUi.sharedFolder.getSession().initialized)'), 'second shared session');
 	console.log('PASS: auto-join shared map in a second editor');
+	assert.equal(first.webContents.getBackgroundThrottling(), false);
+	assert.equal(second.webContents.getBackgroundThrottling(), false);
+	console.log('PASS: covered and hidden shared editors retain unthrottled sync polling');
 	await until(() => b('document.querySelectorAll("button").length > 0'), 'header controls');
 
 	await Promise.all([
