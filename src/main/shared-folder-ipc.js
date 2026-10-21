@@ -9,6 +9,7 @@ export function registerSharedFolder({ipcMain, validateSender, assertWritablePat
 	syncLocation = getSyncLocation, nativeShare = showOneDriveShare, cloudStatus = getSharedCloudStatus, clientId})
 {
 	const owners = new Map();
+	const initialThrottling = new WeakMap();
 	ipcMain.handle('shared-folder', async (event, request) =>
 	{
 		if (!validateSender(event.senderFrame) || event.senderFrame !== event.sender.mainFrame)
@@ -48,6 +49,10 @@ export function registerSharedFolder({ipcMain, validateSender, assertWritablePat
 			}
 			if (!info) return null;
 			if (event.sender.isDestroyed()) throw new Error('Editor was closed while opening the shared map');
+			if (sessions.size === 0) initialThrottling.set(event.sender, event.sender.getBackgroundThrottling());
+			// Collaboration must keep polling and publishing presence when the
+			// editor is covered or minimized, including after long idle periods.
+			event.sender.setBackgroundThrottling(false);
 			const id = randomUUID();
 			sessions.set(id, folder);
 			folder.cloud = cloud;
@@ -58,6 +63,11 @@ export function registerSharedFolder({ipcMain, validateSender, assertWritablePat
 		if (request.action === 'close')
 		{
 			sessions.delete(request.id);
+			if (sessions.size === 0 && !event.sender.isDestroyed())
+			{
+				event.sender.setBackgroundThrottling(initialThrottling.get(event.sender) ?? true);
+				initialThrottling.delete(event.sender);
+			}
 			// A missing/offline directory must not prevent leaving a document.
 			await folder.leave().catch(() => {});
 			return true;
@@ -100,6 +110,7 @@ export function registerSharedFolder({ipcMain, validateSender, assertWritablePat
 				await folder.safePath('manifest.json');
 				const report = await folder.diagnostics();
 				report.cloud = folder.cloud;
+				report.backgroundThrottling = event.sender.getBackgroundThrottling();
 				report.cloudFiles = await cloudStatus(folder.filename).catch(() => ({supported: false, error: 'Windows could not inspect Cloud Files state. Check the OneDrive icon.'}));
 				if (request.editor && typeof request.editor === 'object')
 				{

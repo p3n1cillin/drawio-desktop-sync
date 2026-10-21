@@ -18,6 +18,9 @@ async function fixture(t, syncLocation = async () => ({folderUrl: 'https://compa
 	const sender = new EventEmitter();
 	sender.mainFrame = {};
 	sender.isDestroyed = () => false;
+	let backgroundThrottling = true;
+	sender.setBackgroundThrottling = value => { backgroundThrottling = value; };
+	sender.getBackgroundThrottling = () => backgroundThrottling;
 	const event = {sender, senderFrame: sender.mainFrame};
 	registerSharedFolder({ipcMain: {handle: (_channel, callback) => { handler = callback; }},
 		validateSender: frame => frame === sender.mainFrame, assertWritablePath: async () => {},
@@ -89,4 +92,16 @@ test('diagnostics compare session and delivery without including diagram content
 	assert.equal(report.cloud.folderUrl, 'https://company.sharepoint.com/sites/IT/');
 	assert.equal(JSON.stringify(report).includes('private content'), false);
 	assert.deepEqual(JSON.parse(h.copied()), report);
+});
+
+test('shared sessions keep polling in the background until the last session closes', async t =>
+{
+	const h = await fixture(t);
+	const first = await h.call({action: 'open', path: h.filename, base: '<mxfile/>'});
+	const second = await h.call({action: 'open', path: h.filename});
+	assert.equal(h.sender.getBackgroundThrottling(), false);
+	await h.call({action: 'close', id: first.id});
+	assert.equal(h.sender.getBackgroundThrottling(), false);
+	await h.call({action: 'close', id: second.id});
+	assert.equal(h.sender.getBackgroundThrottling(), true);
 });
