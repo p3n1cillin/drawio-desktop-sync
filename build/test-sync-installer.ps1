@@ -88,5 +88,19 @@ finally
 	$resolvedTest = [IO.Path]::GetFullPath($testDirectory)
 	$resolvedTemp = [IO.Path]::GetFullPath($env:TEMP).TrimEnd('\') + '\'
 	if (-not $resolvedTest.StartsWith($resolvedTemp, [StringComparison]::OrdinalIgnoreCase)) { throw 'Unsafe test cleanup path' }
-	if (Test-Path -LiteralPath $resolvedTest) { Remove-Item -LiteralPath $resolvedTest -Recurse -Force }
+	# The NSIS helper can briefly retain its working directory after uninstall exits.
+	for ($cleanupAttempt = 0; $cleanupAttempt -lt 8; $cleanupAttempt++)
+	{
+		if (-not (Test-Path -LiteralPath $resolvedTest)) { break }
+		try
+		{
+			Remove-Item -LiteralPath $resolvedTest -Recurse -Force -ErrorAction Stop
+			break
+		}
+		catch
+		{
+			if ($cleanupAttempt -eq 7) { throw }
+			Start-Sleep -Milliseconds ([Math]::Min(1000, 250 * ($cleanupAttempt + 1)))
+		}
+	}
 }
