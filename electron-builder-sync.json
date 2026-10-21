@@ -1,7 +1,10 @@
 {
-  "extends": "./electron-builder-win.json",
   "appId": "io.github.p3n1cillin.drawio-desktop-sync",
   "productName": "drawio-desktop-sync",
+  "copyright": "Copyright 2017-2026 draw.io Ltd",
+  "asar": true,
+  "npmRebuild": false,
+  "afterPack": "build/fuses.mjs",
   "artifactName": "drawio-desktop-sync-${version}-${arch}.${ext}",
   "directories": {
     "output": "./dist/sync"
@@ -20,11 +23,18 @@
     "!**/*.map",
     "!dist{,/**}",
     "!src/test{,/**}",
+    "!build/test-sync-installer.ps1",
     "!doc{,/**}",
     "!drawio/.git{,/**}"
   ],
   "win": {
     "target": [
+      {
+        "target": "nsis",
+        "arch": [
+          "x64"
+        ]
+      },
       {
         "target": "zip",
         "arch": [
@@ -34,6 +44,20 @@
     ],
     "signAndEditExecutable": true,
     "signExecutable": false
+  },
+  "nsis": {
+    "artifactName": "drawio-desktop-sync-${version}-${arch}-setup.${ext}",
+    "include": "build/sync-installer.nsh",
+    "oneClick": false,
+    "perMachine": false,
+    "allowElevation": false,
+    "packElevateHelper": false,
+    "allowToChangeInstallationDirectory": true,
+    "runAfterFinish": false,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "shortcutName": "drawio-desktop-sync",
+    "deleteAppDataOnUninstall": false
   },
   "fileAssociations": []
 }

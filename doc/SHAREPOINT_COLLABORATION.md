@@ -7,6 +7,16 @@ path is built into the app.
 
 ## Everyday use
 
+Run `drawio-desktop-sync-32.5.5-x64-setup.exe` to install for your Windows account
+without administrator rights. Setup registers the app in Open with and Default
+apps for `.drawio` files, and creates Start menu and desktop shortcuts. Its final
+page can open Windows Default apps: choose drawio-desktop-sync for `.drawio` if
+Windows keeps a previously chosen application. That user choice is controlled
+by Windows; the installer does not overwrite it. Uninstall is available in
+Installed apps and removes only this fork's registration.
+
+The ZIP is the portable alternative; it does not register file associations.
+
 Open a map from your synced folder. AutoSave starts automatically. Edit normally;
 the fork merges other users' changes as OneDrive delivers them. Recent editor
 avatars and selection outlines use the same sync route. No new account, app
@@ -26,7 +36,8 @@ Unsynced diagrams retain draw.io's normal behavior. Collaboration can also be
 enabled manually from the details dialog for other filesystem sync providers.
 Native sharing requires Windows OneDrive's English Share/Manage access shell
 commands. The app's settings and instance lock are separate from stock draw.io;
-its file associations are unchanged and upstream automatic updates are disabled.
+its installer uses a separate file handler from stock draw.io and upstream
+automatic updates are disabled.
 
 ## Storage and recovery
 
@@ -87,7 +98,7 @@ npm run build:sync
 
 If npm skips Electron's install script, run
 `node node_modules/electron/install.js` before UI testing/building. The portable
-Windows x64 build is unsigned.
+Windows x64 installer and portable build are unsigned.
 
 Microsoft documents the underlying services in
 [How sync works](https://learn.microsoft.com/en-us/sharepoint/sync-process) and

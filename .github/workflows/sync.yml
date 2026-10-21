@@ -7,6 +7,8 @@ on:
       - 'src/**'
       - 'package*.json'
       - 'electron-builder-sync.json'
+      - 'build/sync-installer.nsh'
+      - 'build/test-sync-installer.ps1'
       - '.github/workflows/sync.yml'
 
 permissions:
@@ -35,7 +37,15 @@ jobs:
       - run: npm test
       - run: npm run test:shared-ui
       - run: npm run build:sync
+      - name: Verify installer and file associations
+        shell: pwsh
+        run: |
+          $installers = @(Get-ChildItem dist/sync/*-setup.exe)
+          if ($installers.Count -ne 1) { throw 'Expected one Windows installer' }
+          ./build/test-sync-installer.ps1 -Installer $installers[0].FullName
       - uses: actions/upload-artifact@v6
         with:
           name: drawio-desktop-sync-Windows-x64
-          path: dist/sync/*.zip
+          path: |
+            dist/sync/*-setup.exe
+            dist/sync/*.zip

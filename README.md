@@ -2,7 +2,10 @@ drawio-desktop-sync fork
 --------------------
 
 [Download the Windows x64 preview](https://github.com/p3n1cillin/drawio-desktop-sync/releases).
-Extract the ZIP and run `drawio-desktop-sync.exe`.
+Run the Windows `-setup.exe` installer. It registers `.drawio` files and adds
+Start menu and desktop shortcuts. If Windows already has a chosen default,
+select `drawio-desktop-sync` on the Default apps page opened by setup.
+The ZIP remains available for portable use.
 
 This fork adds automatic AutoSave, merging of shared edits, recent-editor
 indicators and native OneDrive sharing for `.drawio` files in Windows OneDrive
