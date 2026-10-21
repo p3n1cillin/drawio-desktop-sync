@@ -28,7 +28,7 @@
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\App Paths\${APP_EXECUTABLE_FILENAME}" "" "$INSTDIR\${APP_EXECUTABLE_FILENAME}"
 
   WriteRegStr HKCU "${SYNC_KEY}\Capabilities" "ApplicationName" "drawio-desktop-sync"
-  WriteRegStr HKCU "${SYNC_KEY}\Capabilities" "ApplicationDescription" "Edit draw.io diagrams with OneDrive and SharePoint collaboration"
+  WriteRegStr HKCU "${SYNC_KEY}\Capabilities" "ApplicationDescription" "Edit draw.io diagrams with server collaboration and AutoSave"
   WriteRegStr HKCU "${SYNC_KEY}\Capabilities" "ApplicationIcon" '$\"$INSTDIR\${APP_EXECUTABLE_FILENAME}$\",0'
   WriteRegStr HKCU "${SYNC_KEY}\Capabilities\FileAssociations" ".drawio" "${SYNC_CLASS}"
   WriteRegStr HKCU "Software\RegisteredApplications" "drawio-desktop-sync" "${SYNC_KEY}\Capabilities"

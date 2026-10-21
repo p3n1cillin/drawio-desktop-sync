@@ -1,5 +1,21 @@
 # OneDrive and SharePoint collaboration
 
+## Server alternative (32.5.6)
+
+For direct server collaboration, see [Server collaboration](../src/server/README.md).
+The server keeps one authoritative session and sends changes directly between
+clients. Use **… → Move current map to server** on a configured owner's PC, then
+**Share** to copy a shared-map link. Colleagues choose **… → Open shared map** and
+paste the link once. Afterwards, recent files and normal map shortcuts reconnect
+automatically. The header reads **Saved to server**, and the server method does
+not use `.collab` folders in your OneDrive directory.
+
+The instructions below describe the older folder transport. Starting the same
+map independently on two PCs before OneDrive delivers its manifest can create
+separate rooms; do not delete a journal to repair this, because its edits may be
+newer than the conventional file. Preserve the file and both journals before
+migrating to a server.
+
 drawio-desktop-sync adds automatic saving, shared editing and native OneDrive
 sharing to draw.io Desktop. It works with any `.drawio` file in a registered
 Windows OneDrive or SharePoint sync folder. No company, tenant, map name or map

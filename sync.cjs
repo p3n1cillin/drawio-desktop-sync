@@ -22,7 +22,9 @@ if (!/^\d+\.\d+\.\d+$/.test(ver))
 
 let pj = require(appjsonpath)
 
-pj.version = ver
+// The fork releases desktop changes independently of the upstream editor.
+if (process.argv[2] !== 'fork') pj.version = ver
+if (!/^\d+\.\d+\.\d+$/.test(pj.version)) throw new Error('Invalid desktop version')
 
 fs.writeFileSync(appjsonpath, JSON.stringify(pj, null, 2), 'utf8')
 //Enable/disable updates

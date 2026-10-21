@@ -19,6 +19,7 @@ import FileWatcher from './file-watcher.js';
 import { ConfigPathGrants } from './config-paths.js';
 import { getUrlParams, getUrlParamsFiles } from './url-params.js';
 import { registerSharedFolder, sharedFolderScript } from './shared-folder-ipc.js';
+import {ServerMaps, parseInvite} from './server-folder.js';
 import {randomUUID} from 'node:crypto';
 import elecUpPkg from 'electron-updater';
 const {autoUpdater} = elecUpPkg;
@@ -109,7 +110,7 @@ autoUpdater.autoDownload = false
 // A downloaded update is installed when the app quits, unless Restart to Update installed it first
 autoUpdater.autoInstallOnAppQuit = updateMode == 'auto'
 
-const UPDATE_DOWNLOAD_URL = 'https://get.draw.io';
+const UPDATE_DOWNLOAD_URL = 'https://github.com/p3n1cillin/drawio-desktop-sync/releases/latest';
 let updateFailureDialogShown = false;
 
 // Shows a user-facing fallback message when the in-app updater fails for any reason.
@@ -1930,10 +1931,12 @@ app.whenReady().then(() =>
 
 		safeUpdaterCall('setFeedURL', () => autoUpdater.setFeedURL({
 			provider: 'github',
-			repo: 'drawio-desktop',
-			owner: 'jgraph',
+			repo: 'drawio-desktop-sync',
+			owner: 'p3n1cillin',
 			...(updateChannel != null ? {channel: updateChannel} : {})
 		}))
+		autoUpdater.allowPrerelease = false;
+		autoUpdater.allowDowngrade = false;
 
 		checkForUpdatesIfDue();
 		// Also checks while the app stays open, a window left open for days still finds new versions
@@ -2071,7 +2074,7 @@ app.on('web-contents-created', (event, contents) => {
 	})
 })
 
-const DEFAULT_UPDATE_CHECK_HOURS = 24;
+const DEFAULT_UPDATE_CHECK_HOURS = 1;
 
 // The "Check for Updates Automatically" setting, Extras > Automatic Updates in the editor
 function isAutoUpdateEnabled()
@@ -4470,7 +4473,16 @@ if (typeof sharedFolderClientId !== 'string' || !/^[a-f0-9-]{36}$/.test(sharedFo
 	sharedFolderClientId = randomUUID();
 	store?.set('sharedFolderClientId', sharedFolderClientId);
 }
-registerSharedFolder({ipcMain, validateSender, assertWritablePath, clipboard, shell, clientId: sharedFolderClientId});
+const serverMaps = new ServerMaps(app.getPath('userData'), app.getPath('userData') + '-maps');
+registerSharedFolder({ipcMain, validateSender, assertWritablePath, clipboard, shell, clientId: sharedFolderClientId,
+	serverMaps, blessServerMap: blessPath, confirmServer: async request =>
+	{
+		const endpoint = request.action === 'serverJoin' ? parseInvite(request.invite).server :
+			JSON.parse(await fsProm.readFile(serverMaps.setupPath, 'utf8')).server;
+		return (await dialog.showMessageBox({type: 'question', buttons: ['Connect', 'Cancel'], defaultId: 0, cancelId: 1,
+			message: request.action === 'serverJoin' ? 'Open this shared map?' : 'Create a shared map on your server?',
+			detail: endpoint + '\nThe server stores the diagram and its edit history. People with the map link can edit it.'})).response === 0;
+	}});
 
 ipcMain.on("rendererReq", async (event, args) =>
 {

@@ -89,6 +89,6 @@ describe('getReleaseUrl', () =>
 {
 	test('points at the version tag', () =>
 	{
-		assert.equal(getReleaseUrl('31.8.0'), 'https://github.com/jgraph/drawio-desktop/releases/tag/v31.8.0');
+		assert.equal(getReleaseUrl('31.8.0'), 'https://github.com/p3n1cillin/drawio-desktop-sync/releases/tag/v31.8.0');
 	});
 });
