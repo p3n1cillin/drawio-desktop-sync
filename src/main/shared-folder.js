@@ -26,11 +26,12 @@ async function replaceFile(temp, target)
 
 export class SharedFolder
 {
-	constructor(filename)
+	constructor(filename, clientId)
 	{
 		this.filename = path.resolve(filename);
 		this.directory = this.filename + '.collab';
 		this.author = randomUUID();
+		this.client = core.validId(clientId) ? clientId : this.author;
 		this.cache = new Map();
 		this.clock = 0;
 		this.chain = Promise.resolve();
@@ -110,7 +111,7 @@ export class SharedFolder
 			typeof this.manifest.base !== 'string' || Buffer.byteLength(this.manifest.base) > maxFile ||
 			!/^[a-f0-9]{64}$/.test(this.manifest.originalHash)) throw new Error('Invalid collaboration manifest');
 		await this.readCurrent();
-		return {manifest: this.manifest, author: this.author};
+		return {manifest: this.manifest, author: this.author, client: this.client};
 	}
 
 	async readCurrent()
@@ -246,6 +247,7 @@ export class SharedFolder
 	async activity(name, page, selection)
 	{
 		const value = {version: 1, room: this.manifest.room, author: this.author,
+			client: this.client,
 			name: String(name || 'Editor').slice(0, 80), updated: Date.now(),
 			page: String(page || '').slice(0, 200),
 			selection: Array.isArray(selection) ? selection.filter(id => typeof id === 'string').slice(0, 30).map(id => id.slice(0, 200)) : []};
@@ -257,6 +259,11 @@ export class SharedFolder
 			await replaceFile(temp, target);
 		}
 		finally { await fs.unlink(temp).catch(() => {}); }
+		return this.readPresence();
+	}
+
+	async readPresence(all = false)
+	{
 		const names = (await fs.readdir(this.directory)).filter(name => /^presence-[a-f0-9-]{36}\.json$/.test(name)).slice(0, 1000);
 		const active = [];
 		for (const name of names)
@@ -264,14 +271,39 @@ export class SharedFolder
 			try
 			{
 				const peer = await this.readJson(name, 16384);
-				if (peer.room === this.manifest.room && core.validId(peer.author) &&
+				if (core.validId(peer.room) && (all || peer.room === this.manifest.room) && core.validId(peer.author) &&
+					(peer.client == null || core.validId(peer.client)) &&
 					typeof peer.name === 'string' && peer.name.length <= 80 &&
-					Number.isSafeInteger(peer.updated) && Math.abs(Date.now() - peer.updated) < 90000 &&
+					Number.isSafeInteger(peer.updated) && (all || Math.abs(Date.now() - peer.updated) < 90000) &&
 					Array.isArray(peer.selection) && peer.selection.length <= 30 && peer.selection.every(id => typeof id === 'string')) active.push(peer);
 			}
 			catch { /* A partially downloaded heartbeat must not stop durable saves. */ }
 		}
-		return active;
+		if (all) return active;
+		const clients = new Map();
+		for (const peer of active.sort((a, b) => b.updated - a.updated || (a.author < b.author ? -1 : 1)))
+		{
+			const key = peer.client || peer.author;
+			if (!clients.has(key)) clients.set(key, peer);
+		}
+		return [...clients.values()];
+	}
+
+	async diagnostics()
+	{
+		let records = [];
+		let error = null;
+		try { records = await this.scan(); }
+		catch (e) { error = e.message; }
+		const ordered = core.order(records, this.manifest.room);
+		const presence = await this.readPresence(true);
+		return {version: 1, observedAt: new Date().toISOString(), localPath: this.filename,
+			room: this.manifest.room, client: this.client, author: this.author, error,
+			edits: {count: records.length, pending: ordered.pending, heads: ordered.heads,
+				fingerprint: createHash('sha256').update(records.map(op => op.id).sort().join('\n')).digest('hex'),
+				recent: [...records].sort(core.compare).slice(-30).map(op => ({id: op.id, author: op.author, name: op.name, clock: op.clock}))},
+			presence: presence.map(peer => ({author: peer.author, client: peer.client, name: peer.name,
+				room: peer.room, updated: peer.updated, ageSeconds: Math.round((Date.now() - peer.updated) / 1000)}))};
 	}
 
 	async leave()

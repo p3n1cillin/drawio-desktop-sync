@@ -1,4 +1,5 @@
 import path from 'node:path';
+import fs from 'node:fs/promises';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {getSystem32Path} from './system-path.js';
@@ -58,4 +59,11 @@ export async function showOneDriveShare(filename, action = 'share')
 	// user chooses recipients and permissions in Microsoft's own sharing UI.
 	const script = "$ErrorActionPreference='Stop'; $p=$env:SHAREMAP_FOLDER; $shell=New-Object -ComObject Shell.Application; $folder=$shell.NameSpace([System.IO.Path]::GetDirectoryName($p)); $item=$folder.ParseName([System.IO.Path]::GetFileName($p)); if($null -eq $item){throw 'Folder unavailable'}; $verbs=@($item.Verbs()); $copy=-1; for($i=0;$i -lt $verbs.Count;$i++){if(($verbs[$i].Name -replace '&','') -eq 'Copy Link'){$copy=$i;break}}; $target=$null; if($env:SHAREMAP_ACTION -eq 'access'){$target=$verbs | Where-Object {($_.Name -replace '&','') -eq 'Manage access'} | Select-Object -First 1} elseif($copy -gt 0){for($i=$copy-1;$i -ge 0;$i--){if(($verbs[$i].Name -replace '&','') -eq 'Share'){$target=$verbs[$i];break}}}; if($null -eq $target){throw 'OneDrive sharing is unavailable. Check that OneDrive is running.'}; $target.DoIt(); Start-Sleep -Milliseconds 750";
 	await powershell(script, {SHAREMAP_FOLDER: path.dirname(filename), SHAREMAP_ACTION: action});
+}
+
+export async function getSharedCloudStatus(filename)
+{
+	if (process.platform !== 'win32') return {supported: false};
+	const script = await fs.readFile(new URL('./shared-folder-cloud.ps1', import.meta.url), 'utf8');
+	return JSON.parse(await powershell(script, {SHAREMAP_FILE: filename, SHAREMAP_JOURNAL: filename + '.collab'}));
 }
