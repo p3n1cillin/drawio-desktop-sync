@@ -7,8 +7,18 @@ import {randomUUID} from 'node:crypto';
 import {createCollaborationServer} from '../server/server.js';
 import {ServerMaps, ServerFolder, serverRequest, shareInvite, parseInvite} from '../main/server-folder.js';
 import core from '../shared/journal-core.cjs';
+import {sharedMapShortcutArguments} from '../main/server-launch.js';
 
 const xml = '<mxfile><diagram id="page"><mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/></root></mxGraphModel></diagram></mxfile>';
+
+test('Windows shared-map shortcuts bind to their profile and quote spaces and trailing slashes', () =>
+{
+	const room = randomUUID();
+	assert.equal(sharedMapShortcutArguments('C:\\Users\\Test Person\\Profile', room), '--user-data-dir="C:\\Users\\Test Person\\Profile" --shared-map=' + room);
+	assert.equal(sharedMapShortcutArguments('C:\\Profile\\', room), '--user-data-dir="C:\\Profile\\\\" --shared-map=' + room);
+	assert.throws(() => sharedMapShortcutArguments('relative', room), /Invalid/);
+	assert.throws(() => sharedMapShortcutArguments('C:\\Profile', '../escape'), /Invalid/);
+});
 export async function fixture(t)
 {
 	const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'drawio-server-test-'));
@@ -167,6 +177,57 @@ test('presence reports active editing and deduplicates windows from one client w
 	assert.equal(peers.length, 1); assert.equal(peers[0].editing, true); assert.equal(peers[0].editingCell, 'desk');
 	const serverRoom = path.join(h.directory, 'data', a.connection.room, 'map.drawio.collab');
 	assert.equal((await fs.readdir(serverRoom)).some(name => name.startsWith('presence-')), false);
+});
+
+test('shared-map launch retries temporary profile read failures without replacing connection settings', async t =>
+{
+	const h = await fixture(t);
+	const filename = await h.owner.create({xml, name: 'Retry test.drawio'});
+	const room = path.basename(path.dirname(filename));
+	const settingsPath = path.join(path.dirname(filename), 'connection.json');
+	const original = await fs.readFile(settingsPath, 'utf8');
+	for (const code of ['ENOENT', 'EBUSY', 'EACCES', 'EPERM']) await t.test(code, async () =>
+	{
+		let reads = 0;
+		const delays = [], retries = [];
+		const maps = new ServerMaps(path.dirname(h.owner.setupPath), h.owner.directory, {
+			readFile: async (...args) => { if (++reads < 3) throw Object.assign(new Error('temporary'), {code}); return fs.readFile(...args); },
+			wait: async ms => delays.push(ms), onReadRetry: info => retries.push(info)});
+		assert.equal(await maps.restoreRoom(room), filename);
+		assert.equal(reads, 3);
+		assert.deepEqual(delays, [50, 150]);
+		assert.equal(retries[0].code, code);
+		assert.equal(await fs.readFile(settingsPath, 'utf8'), original);
+	});
+});
+
+test('persistent access errors are bounded and never reported as a missing invitation', async t =>
+{
+	const h = await fixture(t); const room = randomUUID();
+	let reads = 0;
+	const maps = new ServerMaps(path.dirname(h.owner.setupPath), h.owner.directory, {
+		readFile: async () => { reads++; throw Object.assign(new Error('denied'), {code: 'EACCES'}); }, wait: async () => {}});
+	await assert.rejects(maps.restoreRoom(room), error => /EACCES/.test(error.message) && !/invitation|Join/.test(error.message) && error.cause.code === 'EACCES');
+	assert.equal(reads, 4);
+	await assert.rejects(maps.open(path.join(h.owner.directory, room, 'Map - retry.drawio')), /EACCES/);
+	assert.equal(reads, 8, 'ordinary server-map opening uses the same bounded read handling');
+});
+
+test('genuinely missing and damaged connection records have distinct errors and remain untouched', async t =>
+{
+	const h = await fixture(t);
+	const filename = await h.owner.create({xml, name: 'Connection test.drawio'});
+	const room = path.basename(path.dirname(filename));
+	const settingsPath = path.join(path.dirname(filename), 'connection.json');
+	const damaged = '{"token":"private-fixture-token", broken';
+	await fs.writeFile(settingsPath, damaged);
+	await assert.rejects(h.owner.restoreRoom(room), error => /invalid or damaged/.test(error.message) && !error.message.includes('private-fixture-token'));
+	assert.equal(await fs.readFile(settingsPath, 'utf8'), damaged);
+	let reads = 0;
+	const missing = new ServerMaps(path.dirname(h.owner.setupPath), h.owner.directory, {
+		readFile: async () => { reads++; throw Object.assign(new Error('missing'), {code: 'ENOENT'}); }, wait: async () => {}});
+	await assert.rejects(missing.restoreRoom(room), /no saved connection.*invitation/);
+	assert.equal(reads, 4);
 });
 
 test('warm idle incremental polls do not reread files or return existing edits', async t =>

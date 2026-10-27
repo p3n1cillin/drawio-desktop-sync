@@ -20,7 +20,7 @@ import { ConfigPathGrants } from './config-paths.js';
 import { getUrlParams, getUrlParamsFiles } from './url-params.js';
 import { registerSharedFolder, sharedFolderScript } from './shared-folder-ipc.js';
 import {ServerMaps, parseInvite} from './server-folder.js';
-import {prepareServerArguments} from './server-launch.js';
+import {prepareServerArguments, sharedMapShortcutArguments} from './server-launch.js';
 import {EditorPreferences, registerEditorPreferences} from './editor-preferences.js';
 import {randomUUID} from 'node:crypto';
 import elecUpPkg from 'electron-updater';
@@ -915,7 +915,7 @@ app.whenReady().then(async () =>
 	
     let argv;
 	try { argv = await prepareServerArguments([...process.argv], serverMaps); }
-	catch (error) { dialog.showErrorBox('Cannot open shared map', error.message); app.quit(); return; }
+	catch (error) { log.error('Shared-map launch failed:', error); dialog.showErrorBox('Cannot open shared map', error.message); app.quit(); return; }
 
     // https://github.com/electron/electron/issues/4690#issuecomment-217435222
     if (process.defaultApp != true)
@@ -1589,41 +1589,36 @@ app.whenReady().then(async () =>
 			// Creating a new window while a save/open dialog is open crashes the app
 			if (dialogOpen) return;
 			try { commandLine = await prepareServerArguments(commandLine, serverMaps); }
-			catch (error) { dialog.showErrorBox('Cannot open shared map', error.message); return; }
+			catch (error) { log.error('Shared-map launch failed:', error); dialog.showErrorBox('Cannot open shared map', error.message); return; }
 
     		//Create another window
     		let win = createWindow()
 
-			let loadEvtCount = 0;
+			let documentLoaded = false, appLoaded = false, argsSent = false;
+			const files = parseDrawioArgs(process.defaultApp === true ? commandLine : [null, ...commandLine]).args.filter(file => statSafe(file)?.isFile());
 			
 			function loadFinished(e)
 			{
-				if (e != null && !validateSender(e.senderFrame)) return null;
-
-				loadEvtCount++;
-				
-				if (loadEvtCount == 2)
+				if (e != null)
 				{
-	    	    	//Open the file if new app request is from opening a file.
-	    	    	//Must be a regular file: the trailing token of a dev-mode
-	    	    	//launch is the app directory ".", and reading a directory
-	    	    	//shows an EISDIR error dialog.
-	    	    	var potFile = commandLine.pop();
-	    	    	var potStat = statSafe(potFile);
-
-	    	    	if (potStat != null && potStat.isFile())
-	    	    	{
-	    	    		// User intent: launched the app from CLI / file association
-	    	    		// while another instance was already running.
-	    	    		blessPath(potFile);
-	    	    		win.webContents.send('args-obj', {args: [potFile]});
-	    	    	}
+					if (e.sender !== win.webContents || !validateSender(e.senderFrame)) return;
+					appLoaded = true;
+				}
+				else documentLoaded = true;
+				
+				if (documentLoaded && appLoaded && !argsSent && !win.isDestroyed())
+				{
+					argsSent = true;
+					ipcMain.removeListener('app-load-finished', loadFinished);
+					// Chromium may append switches after the filename. Parse all
+					// arguments and wait for this editor's own readiness messages.
+					for (const file of files) blessPath(file);
+					if (files.length) win.webContents.send('args-obj', {args: files});
 				}
 			}
 			
-			//Order of these two events is not guaranteed, so wait for them async.
-			//TOOD There is still a chance we catch another window 'app-load-finished' if user created multiple windows quickly 
-	    	ipcMain.once('app-load-finished', loadFinished);
+			ipcMain.on('app-load-finished', loadFinished);
+			win.webContents.once('destroyed', () => ipcMain.removeListener('app-load-finished', loadFinished));
     	    
     	    win.webContents.on('did-finish-load', function()
     	    {    			
@@ -4511,19 +4506,21 @@ if (typeof sharedFolderClientId !== 'string' || !/^[a-f0-9-]{36}$/.test(sharedFo
 	sharedFolderClientId = randomUUID();
 	store?.set('sharedFolderClientId', sharedFolderClientId);
 }
-const serverMaps = new ServerMaps(app.getPath('userData'), app.getPath('userData') + '-maps');
+const serverMaps = new ServerMaps(app.getPath('userData'), app.getPath('userData') + '-maps',
+	{onReadRetry: details => log.warn('Retrying shared-map connection read:', details)});
 function createServerShortcut(folder)
 {
 	if (process.platform !== 'win32') return null;
 	const title = folder.connection.name.replace(/\.drawio$/i, '').replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').slice(0, 100);
 	const stem = path.join(app.getPath('desktop'), title + ' (shared map)');
+	const args = sharedMapShortcutArguments(app.getPath('userData'), folder.connection.room);
 	let shortcut = stem + '.lnk';
 	for (let index = 2; fs.existsSync(shortcut); index++)
 	{
-		try { if (shell.readShortcutLink(shortcut).args === '--shared-map=' + folder.connection.room) break; } catch {}
+		try { if ([args, '--shared-map=' + folder.connection.room].includes(shell.readShortcutLink(shortcut).args)) break; } catch {}
 		shortcut = stem + ' (' + index + ').lnk';
 	}
-	if (!shell.writeShortcutLink(shortcut, 'create', {target: process.execPath, args: '--shared-map=' + folder.connection.room,
+	if (!shell.writeShortcutLink(shortcut, 'create', {target: process.execPath, args,
 		icon: process.execPath, iconIndex: 0, description: 'Open shared map from the collaboration server'})) throw new Error('Windows could not create the map shortcut');
 	return shortcut;
 }

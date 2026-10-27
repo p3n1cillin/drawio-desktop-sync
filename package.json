@@ -1,6 +1,6 @@
 {
   "name": "drawio-desktop-sync",
-  "version": "32.5.8",
+  "version": "32.5.9",
   "description": "draw.io Desktop with server collaboration and AutoSave",
   "exports": "./src/main/electron.js",
   "type": "module",
