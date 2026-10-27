@@ -79,6 +79,15 @@ try
 	assert.equal(await a('testUi.sharedFolder.getSession().transport'), 'server');
 	assert.equal(await a('testUi.sharedFolder.getSession().manifest.room'), await b('testUi.sharedFolder.getSession().manifest.room'));
 	console.log('PASS: both real editors join one authoritative HTTPS server room');
+	const priorWindows = new Set(BrowserWindow.getAllWindows().map(win => win.id));
+	app.emit('second-instance', {}, [process.execPath, process.argv[1], '--shared-map=' + roomId, '--user-data-dir=' + userData], directory);
+	app.emit('second-instance', {}, [process.execPath, process.argv[1], copyFile, '--enable-features=TestTrailingSwitch'], directory);
+	const extraWindows = await until(() => { const list = BrowserWindow.getAllWindows().filter(win => !priorWindows.has(win.id)); return list.length === 2 && list; }, 'simultaneous shortcut windows');
+	const extraEditors = await Promise.all(extraWindows.map(attach));
+	await until(async () => { const paths = await Promise.all(extraEditors.map(run => run('testUi.getCurrentFile()?.fileObject?.path'))); return paths.includes(filename) && paths.includes(copyFile); }, 'shortcut file paths with trailing switches');
+	await until(async () => (await Promise.all(extraEditors.map(run => run('!!testUi.sharedFolder.getSession()?.initialized')))).some(Boolean), 'second-instance shared map connection');
+	for (const win of extraWindows) win.destroy();
+	console.log('PASS: concurrent second-instance shortcuts open the correct documents despite trailing Chromium switches');
 	await Promise.all([
 		a('testUi.editor.graph.model.setValue(testUi.editor.graph.model.getCell("desk"), "Letter changed"); true'),
 		b('testUi.editor.graph.insertVertex(testUi.editor.graph.getDefaultParent(), "peer", "Peer desk", 300, 300, 100, 50); true')]);

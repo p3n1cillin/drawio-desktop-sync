@@ -20,6 +20,9 @@ creates desktop and Start menu shortcuts. The ZIP is an optional portable build.
   character-by-character text merging.
 - Per-map sharing links, owner-controlled revocation and automatic desktop map
   shortcuts. Room-based shortcuts restore a missing local launch cache.
+  Windows shortcuts retain their app profile. Temporary connection-file read
+  failures are retried; access errors and damaged settings are reported separately
+  from a genuinely missing saved connection.
 - Incremental updates, cached server rooms and no repeated diagram cloning or
   serialization during idle sync. Unused server rooms expire from memory.
 - Standalone `.drawio` files retain normal draw.io behaviour. Save As creates an

@@ -150,7 +150,41 @@ export class ServerFolder
 
 export class ServerMaps
 {
-	constructor(userData, mapsDirectory = path.join(userData, 'server-maps')) { this.directory = mapsDirectory; this.setupPath = path.join(userData, 'server-setup.json'); }
+	constructor(userData, mapsDirectory = path.join(userData, 'server-maps'), options = {})
+	{
+		this.directory = mapsDirectory;
+		this.setupPath = path.join(userData, 'server-setup.json');
+		this.readFile = options.readFile || fs.readFile;
+		this.wait = options.wait || (ms => new Promise(resolve => setTimeout(resolve, ms)));
+		this.onReadRetry = options.onReadRetry || (() => {});
+	}
+	async readConnection(room)
+	{
+		if (!core.validId(room)) throw new Error('Invalid shared-map shortcut');
+		const filename = path.join(this.directory, room, 'connection.json');
+		let raw;
+		for (let attempt = 0; ; attempt++)
+		{
+			try { raw = await this.readFile(filename, 'utf8'); break; }
+			catch (error)
+			{
+				// A briefly locked/unavailable profile file is not a lost invitation.
+				if (attempt < 3 && ['ENOENT', 'EBUSY', 'EACCES', 'EPERM'].includes(error.code))
+				{
+					this.onReadRetry({code: error.code, attempt: attempt + 1, room});
+					await this.wait([50, 150, 400][attempt]);
+					continue;
+				}
+				if (error.code === 'ENOENT') throw new Error('This PC has no saved connection for this shared map. Join using its invitation link, then reopen the shortcut.', {cause: error});
+				throw new Error('Cannot read the saved shared-map connection (' + (error.code || 'file access error') + '). Retry or check access to your app profile. The server map has not been changed.', {cause: error});
+			}
+		}
+		let connection;
+		try { connection = validateConnection(JSON.parse(raw)); }
+		catch { throw new Error('The saved shared-map connection is invalid or damaged. Restore its connection settings from backup. The server map has not been changed.'); }
+		if (connection.room !== room) throw new Error('The shared-map cache belongs to a different room');
+		return connection;
+	}
 	async cache(connection, client)
 	{
 		connection = validateConnection(connection);
@@ -177,9 +211,7 @@ export class ServerMaps
 	async restoreRoom(room)
 	{
 		if (!core.validId(room)) throw new Error('Invalid shared-map shortcut');
-		let connection;
-		try { connection = JSON.parse(await fs.readFile(path.join(this.directory, room, 'connection.json'), 'utf8')); }
-		catch { throw new Error('Join this shared map once using its invitation link, then reopen the shortcut.'); }
+		const connection = await this.readConnection(room);
 		const files = await fs.readdir(path.join(this.directory, room));
 		const name = files.find(name => /^Map - .*\.drawio$/i.test(name));
 		return name ? path.join(this.directory, room, name) : this.cache(connection);
@@ -209,8 +241,7 @@ export class ServerMaps
 		if (relative.startsWith('..') || path.isAbsolute(relative)) return null;
 		const parts = relative.split(path.sep);
 		if (parts.length !== 2 || !core.validId(parts[0]) || !/\.drawio$/i.test(parts[1])) return null;
-		const connection = JSON.parse(await fs.readFile(path.join(this.directory, parts[0], 'connection.json'), 'utf8'));
-		if (connection.room !== parts[0]) throw new Error('The shared-map cache belongs to a different room');
+		const connection = await this.readConnection(parts[0]);
 		return new ServerFolder(filename, connection, client);
 	}
 }
