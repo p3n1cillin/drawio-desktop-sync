@@ -1,15 +1,47 @@
 # Server collaboration
 
-The server is the authoritative diagram and journal store. Clients receive
-incremental updates every second and publish local changes shortly after editing.
-Idle sync does not clone or serialize diagrams. The server caches rooms and edit
-history, and expires unused rooms after five minutes. Selection and editing
-changes are published promptly; a ten-second heartbeat keeps users visible even
-during long label edits. The service
-does not use OneDrive or Microsoft Graph. Clients need network/VPN access to it.
+drawio-desktop-sync lets several people edit the same diagram at once, in the
+style of Office co-authoring: everyone sees each other's changes within a fraction
+of a second, who is in the map and where they are working, and can comment,
+review changes and restore earlier versions. A small HTTPS service that you host
+is the authoritative store. Nothing is sent to a third-party cloud service.
 
-Run `src/server/server.js` with Node 24 LTS. There are no server npm dependencies.
-Set `DRAWIO_SYNC_CONFIG` to a private JSON file:
+## Features
+
+- **Live co-editing.** Edits are pushed to everyone as soon as the server saves
+  them (the server holds a watch request open per editor; there is no polling
+  delay). Different properties merge automatically. When two people change the
+  same property before seeing each other's change, both are kept and **Review
+  changes** lets either person choose the value.
+- **Presence.** Avatars of everyone in the map, their selection outlined in
+  their colour with their name, a note when someone is editing the object you
+  selected, and live named mouse pointers. Click an avatar to go to that person.
+- **AutoSave.** On by default, like Office. Turn it off to save with Ctrl+S.
+- **Version History.** File > Version History (or … > Version history) lists
+  versions grouped like Office AutoSave versions, with who edited each one.
+  Preview any version, hold Compare to see the current map, and Restore. A
+  restore is saved as a new edit, so nothing is lost and everyone sees it.
+- **Show Changes.** … > Show changes, or right-click shapes > Show changes,
+  lists who changed what and when, newest first (for example *Changed text from
+  "A" to "B"*), for the whole map or the selected shapes. Click a change to go to
+  that shape.
+- **Comments.** The Comments button opens threaded comments, anchored to shapes
+  or to the map, with replies, resolve and reopen. People can only edit or delete
+  their own comments; the map owner can delete any. **@mentions** suggest people
+  who have opened the map, and the mentioned person gets a notification.
+- **Sharing.** **Share** copies a link that lets people either edit or only view
+  the map, lists the people with access, and lets the owner stop current edit
+  or view links (everyone using the old link is disconnected).
+- **Identity.** Each desktop labels its user with the signed-in Windows work or
+  school account (email address) and the Office user name, falling back to the
+  Windows user name. People can set a different display name in … > Your
+  display name. These are labels for presence, history, comments and mentions;
+  the link is the credential, not a verified Microsoft sign-in.
+
+## Running the service
+
+Run `src/server/server.js` with Node 24 LTS. There are no server npm
+dependencies. Set `DRAWIO_SYNC_CONFIG` to a private JSON file:
 
 ```json
 {
@@ -23,63 +55,71 @@ Set `DRAWIO_SYNC_CONFIG` to a private JSON file:
 ```
 
 Use TLS with a certificate containing the server's actual DNS name or IP address.
-The desktop connection explicitly trusts the supplied server certificate/CA and
-still verifies hostname and certificate validity. No global certificate bypass is
-used. Give the service account exclusive access to its data and TLS private key.
-Run under a service supervisor, with restart and resource limits. Back up the
-entire data directory, including access records, to your existing backup system.
+The desktop connection explicitly trusts the supplied server certificate or CA
+and still verifies the hostname and certificate validity; no global certificate
+bypass is used. Give the service account exclusive access to its data directory
+and TLS private key, run it under a service supervisor with restart and resource
+limits, and back up the whole data directory (it includes access records and
+comments). Clients need network or VPN access to the service. Each open map keeps
+one HTTPS request waiting on the server, so allow one connection per open map.
 
-On a map owner's PC, place a private `server-setup.json` in the app's user data
-directory (`%APPDATA%/drawio-desktop-sync` on Windows):
+## Creating and joining maps
+
+On the PC of anyone allowed to create shared maps, place a private
+`server-setup.json` in the app's user data directory
+(`%APPDATA%/drawio-desktop-sync` on Windows):
 
 ```json
 {"server":"https://diagrams.example.test:9443","ca":"-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----\n","adminToken":"YOUR-PRIVATE-ADMIN-TOKEN"}
 ```
 
-Open a diagram and choose **Share**. The native desktop
-confirmation identifies the destination before uploading. The original file is
-retained. The new server map opens from a separate local launch cache, and recent
-files reopen the server session automatically. A desktop shortcut is created;
-it identifies the room and restores a missing launch cache automatically.
-AutoSave says **Saved to server**.
+Open a diagram and choose **Share**. A native confirmation names the server
+before anything is uploaded. The original file is kept; the shared map opens
+from a separate local copy, recent files reconnect automatically, and a desktop
+shortcut is created.
 
-Use **Share → Copy shared-map link**. A colleague installs the same release and
-chooses **… → Open shared map**, then pastes the link. No server administrator
-token is included. Treat links as edit credentials: anyone with one can read and
-edit that map. Names are display labels, not authenticated Microsoft identities.
-The owner can revoke all existing edit links in **Share**, then issue a new link.
-Revocation also disconnects editors using the old credential.
+To invite people, choose **Share**, pick *can edit* or *can view*, and **Copy
+link**. They install the same release and choose **… > Open shared map**, then
+paste the link. The administrator token is never included in links. Treat links
+like keys. If a shortcut is opened on a PC that has not joined the map yet, the
+app offers to paste the link instead of failing.
 
-Installer builds check this fork's stable GitHub releases automatically, download
-newer versions quietly and install them when the app closes. They never replace
-the fork with stock draw.io. Update checks default to hourly; Help includes update
-settings and **Restart to Update**. Portable ZIP builds notify instead of changing
-their installation. Release versions are independent of the bundled editor's
-version, so each desktop update can be detected correctly.
+## Reliability
 
-The app keeps pending published operations in a local durable outbox and retries
-using the same operation ID. Edits and snapshots are written durably before the
-server acknowledges them. If disconnected, the editor shows **Sync paused** and
-preserves its modified state; reconnect before closing to save later local edits.
-This preview does not provide a complete offline editor or Microsoft's Excel
-coauthoring protocol. Different properties merge automatically. Concurrent edits
-to one property produce a review notification with both versions; users can keep
-the current value or publish the earlier value as a new edit. The journal uses
-deterministic Lamport/ID ordering and preserves all accepted operations.
+Pending edits are kept in a durable outbox on the PC and retried with the same
+operation ID, so a lost response never duplicates an edit; edits the server
+refuses (for example after a link is stopped) are not retried. Edits and
+snapshots are written durably before the server acknowledges them. If the
+connection drops, the editor shows **Sync paused** and keeps its changes;
+reconnect before closing to save them. The journal orders edits by server clock
+and keeps every accepted edit, which is what Version History and Show Changes
+read.
 
-Keep the old file and any old `.collab` folders as migration backups until users
-have checked their diagrams. The server does not import or silently reconcile
-conflicting old OneDrive rooms. File exports and Save As produce standalone copies.
+## Performance
 
-Run `npm test` and `npm run test:server-ui` to validate the server and desktop,
-including missing-cache recovery, idle work, live editing and conflict recovery.
-The PEM fixtures under `src/test/fixtures/sync-tls` are public test credentials;
-they are never used by the deployed service or included in the Windows package.
+- Edits are pushed; while the push connection is healthy the app only checks
+  the server every five seconds as a safety net.
+- Pointer and selection updates are batched on the server (100 ms) so moving
+  the mouse does not wake every desktop for each event.
+- Each desktop applies only edits it has not applied yet, and its own edits are
+  never replayed. Reopening a map starts from that desktop's own saved copy and
+  replays only newer edits.
+- The server loads a map's edit history in parallel batches (a 3,000-edit map
+  loads in about 0.15 s).
 
 ## Limits
 
-Shared bases and materialized diagrams are limited to 16 MiB; an operation is
-limited to 4 MiB and a room to 10,000 operations. Save an archive and create a new
-shared map before reaching the history limit. Stored data and TLS keys belong in
-your normal server backup policy. Desktop 32.5.6 clients remain compatible with
-the service, but need updating for incremental sync and the review UI.
+Shared bases and materialized diagrams are limited to 16 MiB, an edit to 4 MiB,
+a map to 10,000 edits and 5,000 comments. Save an archive and create a new shared
+map before reaching the edit limit. Desktops from before these features still
+connect, but need updating for push updates, comments, view links and Version
+History; servers from before them still work with new desktops, which fall back
+to polling and show which features need a server update.
+
+## Testing
+
+Run `npm test` and `npm run test:server-ui` to validate the server and desktop,
+including two real editors syncing over HTTPS, push latency, presence and
+pointers, Version History, Show Changes, comments, mentions and view links. The
+PEM fixtures under `src/test/fixtures/sync-tls` are public test credentials; they
+are never used by the deployed service or included in the Windows package.

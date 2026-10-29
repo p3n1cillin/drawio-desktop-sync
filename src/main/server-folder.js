@@ -16,9 +16,9 @@ export function validateConnection(value)
 		name: String(value.name || 'Shared map').slice(0, 120),
 		...(value.ownerToken && /^[-_a-zA-Z0-9]{40,100}$/.test(value.ownerToken) ? {ownerToken: value.ownerToken} : {})};
 }
-export function shareInvite(connection)
+export function shareInvite(connection, token = connection.token)
 {
-	const {ownerToken: _owner, ...shared} = validateConnection(connection);
+	const {ownerToken: _owner, ...shared} = validateConnection({...connection, token});
 	return prefix + Buffer.from(JSON.stringify(shared)).toString('base64url');
 }
 export function parseInvite(text)
@@ -27,7 +27,7 @@ export function parseInvite(text)
 	try { return validateConnection(JSON.parse(Buffer.from(text.slice(prefix.length), 'base64url').toString('utf8'))); }
 	catch { throw new Error('Invalid shared-map link'); }
 }
-export async function serverRequest(connection, route, body, token = connection.ownerToken || connection.token)
+export async function serverRequest(connection, route, body, token = connection.ownerToken || connection.token, timeout = 15000)
 {
 	const url = new URL(route, connection.server);
 	const data = Buffer.from(JSON.stringify(body));
@@ -50,16 +50,22 @@ export async function serverRequest(connection, route, body, token = connection.
 				try
 				{
 					const result = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-					if (res.statusCode !== 200) reject(new Error(result.error || 'Server access failed'));
+					if (res.statusCode !== 200) reject(Object.assign(new Error(result.error || 'Server access failed'), {status: res.statusCode}));
 					else resolve(result);
 				}
 				catch { reject(new Error('Invalid response from the collaboration server')); }
 			});
 		});
-		req.setTimeout(15000, () => req.destroy(new Error('Cannot reach the collaboration server. Your pending edit is kept on this PC; reconnect and retry.')));
+		req.setTimeout(timeout, () => req.destroy(new Error('Cannot reach the collaboration server. Your pending edit is kept on this PC; reconnect and retry.')));
 		req.on('error', error => reject(new Error(error.code ? 'Cannot connect securely to the collaboration server (' + error.code + '). Your pending edits are kept on this PC.' : error.message)));
 		req.end(data);
 	});
+}
+// The server refused the edit itself (revoked link, view-only, invalid edit), so
+// retrying can never succeed; network failures and overload are retried.
+function refused(error)
+{
+	return error.status >= 400 && error.status < 500 && ![408, 429].includes(error.status);
 }
 async function saveJson(filename, value)
 {
@@ -86,11 +92,11 @@ export class ServerFolder
 		this.records = new Map();
 		this.stats = {requests: 0, lastRoundTripMs: 0};
 	}
-	async request(action, body = {})
+	async request(action, body = {}, timeout)
 	{
 		const started = Date.now();
 		try { return await serverRequest(this.connection, '/v1/maps/' + this.connection.room + '/' + action,
-			{...body, author: this.author, client: this.client}); }
+			{...body, author: this.author, client: this.client}, undefined, timeout); }
 		finally { this.stats.requests++; this.stats.lastRoundTripMs = Date.now() - started; }
 	}
 	async open()
@@ -101,13 +107,15 @@ export class ServerFolder
 		{
 			const pendingPath = path.join(directory, name);
 			const pending = JSON.parse(await fs.readFile(pendingPath, 'utf8'));
-			await serverRequest(this.connection, '/v1/maps/' + this.connection.room + '/append', pending);
+			try { await serverRequest(this.connection, '/v1/maps/' + this.connection.room + '/append', pending); }
+			catch (error) { if (!refused(error)) throw error; }
 			await fs.unlink(pendingPath).catch(error => { if (error.code !== 'ENOENT') throw error; });
 		}
 		const info = await this.request('open');
 		this.manifest = info.manifest;
 		this.incremental = !!info.capabilities?.incrementalSync;
-		return {...info, author: this.author, client: this.client, transport: this.transport,
+		this.role = info.role || 'edit';
+		return {...info, role: this.role, author: this.author, client: this.client, transport: this.transport,
 			server: this.connection.server, owner: !!this.connection.ownerToken};
 	}
 	async updates()
@@ -125,23 +133,56 @@ export class ServerFolder
 		for (const op of await this.updates()) this.records.set(op.id, op);
 		return [...this.records.values()];
 	}
-	async append(patch, parents, name, operationId)
+	async append(patch, parents, name, operationId, email)
 	{
-		const record = {patch, parents, name, operationId: operationId || randomUUID(), author: this.author, client: this.client};
+		// Never queue an edit in the durable outbox that the server must refuse.
+		if (this.role === 'view') throw new Error('This link is view-only');
+		const record = {patch, parents, name, email, operationId: operationId || randomUUID(), author: this.author, client: this.client};
 		const pendingPath = path.join(path.dirname(this.filename), 'outbox-' + record.operationId + '.json');
 		await saveJson(pendingPath, record);
-		const result = await this.request('append', record);
-		await fs.unlink(pendingPath).catch(error => { if (error.code !== 'ENOENT') throw error; });
-		return result;
+		const sent = this.request('append', record);
+		const settled = await sent.then(() => true, error => refused(error));
+		if (settled) await fs.unlink(pendingPath).catch(error => { if (error.code !== 'ENOENT') throw error; });
+		return sent;
 	}
 	snapshot(xml, heads) { return this.request('snapshot', {xml, heads}); }
-	activity(name, page, selection, editing, editingCell) { return this.request('activity', {name, page, selection, editing, editingCell}); }
+	// This desktop's own copy of the map after the first `count` server edits, so
+	// reopening replays only newer edits. Copies written by other desktops are never used.
+	async launchState()
+	{
+		try
+		{
+			const state = JSON.parse(await fs.readFile(path.join(path.dirname(this.filename), 'launch-state.json'), 'utf8'));
+			return state.room === this.connection.room && Number.isSafeInteger(state.count) && state.count > 0 && core.validId(state.last) && typeof state.xml === 'string' ? state : null;
+		}
+		catch { return null; }
+	}
+	async saveLaunchState({count, last, xml})
+	{
+		if (!Number.isSafeInteger(count) || count < 1 || !core.validId(last) || typeof xml !== 'string' || xml.length > 32 * 1024 * 1024) throw new Error('Invalid launch state');
+		await saveJson(path.join(path.dirname(this.filename), 'launch-state.json'), {room: this.connection.room, count, last, xml});
+		return true;
+	}
+	history() { return this.request('history'); }
+	activity(name, page, selection, editing, editingCell, pointer, email) { return this.request('activity', {name, page, selection, editing, editingCell, pointer, email}); }
 	leave() { return this.request('leave'); }
 	diagnostics() { return this.request('diagnostics'); }
-	async shareLink() { return shareInvite(this.connection); }
-	async rotateLink()
+	// Held by the server until edits, comments or presence differ from what the
+	// editor last saw (or 20 seconds pass).
+	watch({cursor, epoch, comments, presence} = {}) { return this.request('watch', {cursor, epoch, comments, presence}, 30000); }
+	comments() { return this.request('comments'); }
+	comment(body) { return this.request('comment', body); }
+	people() { return this.request('people'); }
+	async shareLink(kind = 'edit')
 	{
-		const {token} = await this.request('rotate');
+		if (kind !== 'view' || this.role === 'view') return shareInvite(this.connection);
+		const {token} = await this.request('viewLink');
+		return shareInvite(this.connection, token);
+	}
+	async rotateLink(kind = 'edit')
+	{
+		const {token} = await this.request('rotate', {kind});
+		if (kind === 'view') return true;
 		this.connection.token = token;
 		await saveJson(path.join(path.dirname(this.filename), 'connection.json'), this.connection);
 		return true;

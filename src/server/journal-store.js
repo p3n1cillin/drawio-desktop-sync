@@ -140,19 +140,30 @@ export class JournalStore
 		{
 			throw new Error('Collaboration manifest changed. Stop editing and restore the original manifest.');
 		}
+		// The directory is verified once; entries that are not plain files are refused.
 		await this.safePath('manifest.json');
-		const names = await fs.readdir(this.directory);
-		const edits = names.filter(name => name.startsWith('edit-') && name.endsWith('.json'));
+		const edits = (await fs.readdir(this.directory, {withFileTypes: true})).filter(entry => entry.name.startsWith('edit-') && entry.name.endsWith('.json'));
 		if (edits.length > 10000) throw new Error('Journal limit reached. Export a copy to start a new shared map.');
+		if (edits.some(entry => !entry.isFile())) throw new Error('Unsafe journal file');
 		let bytes = 0;
-		const current = new Set();
-		for (const name of edits)
+		const read = async entry =>
 		{
-			const target = await this.safePath(name);
-			const stat = await fs.stat(target);
-			bytes += stat.size;
-			if (stat.size > core.maxBytes || bytes > maxJournal) throw new Error('Journal size limit reached');
-			const op = await this.readJson(name, core.maxBytes);
+			// Size is checked on the open handle, so the file read is the file measured.
+			const handle = await fs.open(path.join(this.directory, entry.name), 'r');
+			try
+			{
+				const {size} = await handle.stat();
+				bytes += size;
+				if (size > core.maxBytes || bytes > maxJournal) throw new Error('Journal size limit reached');
+				return JSON.parse(await handle.readFile('utf8'));
+			}
+			finally { await handle.close(); }
+		};
+		const ops = [];
+		for (let index = 0; index < edits.length; index += 64) ops.push(...await Promise.all(edits.slice(index, index + 64).map(read)));
+		const current = new Set();
+		for (const op of ops)
+		{
 			core.validate(op, this.manifest.room);
 			if (this.cache.has(op.id) && JSON.stringify(this.cache.get(op.id)) !== JSON.stringify(op))
 			{
@@ -170,7 +181,7 @@ export class JournalStore
 		return [...this.cache.values()];
 	}
 
-	append(patch, parents, name, operationId = randomUUID())
+	append(patch, parents, name, operationId = randomUUID(), email = '')
 	{
 		const write = async () =>
 		{
@@ -184,7 +195,8 @@ export class JournalStore
 			}
 			const op = {version: 1, room: this.manifest.room, id: operationId,
 				author: this.author, name: String(name || 'Editor').slice(0, 80),
-				clock: ++this.clock, parents, patch};
+				clock: ++this.clock, time: Date.now(), parents, patch};
+			if (email) op.email = email;
 			const overlapping = conflicts.detect([...this.cache.values()], parents, patch, this.author);
 			if (overlapping.length) op.conflicts = overlapping;
 			core.validate(op, this.manifest.room);
@@ -219,6 +231,21 @@ export class JournalStore
 		}
 		finally { await fs.unlink(temp).catch(() => {}); }
 		return true;
+	}
+
+	async history()
+	{
+		// Edits saved before records carried a time use their immutable file's write time.
+		const records = await this.scan();
+		this.times = this.times || new Map();
+		const times = {};
+		for (const op of records) if (!Number.isSafeInteger(op.time))
+		{
+			if (!this.times.has(op.id)) this.times.set(op.id, Math.round((await fs.stat(await this.safePath('edit-' + op.id + '.json'))).mtimeMs));
+			times[op.id] = this.times.get(op.id);
+		}
+		this.created = this.created ?? Math.round((await fs.stat(await this.safePath('manifest.json'))).mtimeMs);
+		return {created: this.created, times};
 	}
 
 	async diagnostics()
