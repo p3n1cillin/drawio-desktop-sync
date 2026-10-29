@@ -1,8 +1,9 @@
 # drawio-desktop-sync
 
-A general-purpose draw.io Desktop fork with self-hosted collaboration and AutoSave.
-It works with your diagrams and your server; no company, tenant, diagram or server
-address is built into the application.
+A general-purpose draw.io Desktop fork with self-hosted, Office-style co-authoring:
+several people edit the same diagram at once with AutoSave, live presence,
+comments, Show Changes and Version History. It works with your diagrams and your
+server; no company, tenant, diagram or server address is built into the application.
 
 [Download the Windows installer](https://github.com/p3n1cillin/drawio-desktop-sync/releases/latest).
 Run the `-setup.exe` for your Windows account. It registers `.drawio` files and
@@ -10,36 +11,48 @@ creates desktop and Start menu shortcuts. The ZIP is an optional portable build.
 
 ## Collaboration
 
-- One authoritative diagram and durable edit history on your HTTPS server.
-- AutoSave, concurrent shape/property merges, undo and reconnection.
-- Live editor avatars, named selection outlines and active-editing indicators.
-  Click an avatar to find the person's selected object. Set your display name in
-  the three-dot menu.
-- Review overlapping property edits and restore an earlier value without losing
-  the accepted history. Independent properties merge automatically; this is not
-  character-by-character text merging.
-- Per-map sharing links, owner-controlled revocation and automatic desktop map
-  shortcuts. Room-based shortcuts restore a missing local launch cache.
-  Windows shortcuts retain their app profile. Temporary connection-file read
-  failures are retried; access errors and damaged settings are reported separately
-  from a genuinely missing saved connection.
-- Incremental updates, cached server rooms and no repeated diagram cloning or
-  serialization during idle sync. Unused server rooms expire from memory.
-- Standalone `.drawio` files retain normal draw.io behaviour. Save As creates an
-  independent copy. The former OneDrive collaboration transport and shell
-  sharing integration have been removed.
+- **Live co-editing.** One authoritative diagram and durable edit history on your
+  HTTPS server. Changes are pushed to everyone in about 0.2 seconds. Independent
+  shapes and properties merge automatically; when two people change the same
+  property at once, **Review changes** keeps both and lets either choose.
+- **AutoSave**, on by default like Office, with undo and automatic reconnection.
+  Turn it off to save with Ctrl+S.
+- **Presence.** Avatars of everyone in the map, their selections outlined with
+  their name, a note when someone is editing the object you selected, and live
+  named mouse pointers. Click an avatar to go to that person.
+- **Version History** (File › Version History): versions grouped like Office
+  AutoSave versions, with who edited each. Preview any version, hold Compare to
+  see the current map, and restore it. A restore is saved as a new edit, so
+  nothing is lost and everyone sees it.
+- **Show Changes** (… › Show changes, or right-click shapes): who changed what and
+  when, newest first, for the whole map or the selected shapes. Click a change to
+  go to that shape.
+- **Comments** on shapes or the map with replies, resolve and reopen, and
+  **@mentions** that notify the person mentioned.
+- **Sharing.** **Share** copies a link that lets people edit or only view, lists
+  the people with access, and lets the owner stop current edit or view links.
+- **Names from the signed-in account.** Each person is labelled with their Windows
+  work or school account and Office user name, falling back to the Windows user
+  name; … › Your display name overrides it. These are labels; the link is the
+  credential, not a verified Microsoft sign-in.
+- **Fast on large maps.** Each desktop applies only edits it has not seen, reopens
+  from its own saved copy, and the server loads thousands of edits in a fraction
+  of a second.
+- Desktop map shortcuts. A shortcut for a map this PC has not joined offers to
+  paste the shared-map link instead of failing. Standalone `.drawio` files keep
+  normal draw.io behaviour, and Save As creates an independent copy.
 
-Set up your service using the [server guide](src/server/README.md). An owner can
-open a diagram and choose **Share** to create its server copy, then copy a link.
-Colleagues choose **… → Open shared map**, paste the link once and accept the
-server connection. A desktop shortcut is created for subsequent use. The header
-reads **Saved to server**. The original imported file is retained as a backup.
+Set up your service using the [server guide](src/server/README.md). An owner opens
+a diagram and chooses **Share** to create its server copy, then copies a link.
+Colleagues choose **… › Open shared map**, paste the link once and accept the
+server connection. A desktop shortcut is created for later use. The header reads
+**Saved to server**. The original imported file is kept as a backup.
 
-People with an edit link can read and edit that map. Display names are labels,
-not Microsoft identities. Clients must be able to reach the server. Accepted
-edits are durable, and pending published operations have a local outbox; reconnect
-before closing to save later unsent changes. Complete offline editing and the
-Microsoft Excel coauthoring protocol are not implemented.
+Treat links like keys: anyone with an edit link can change that map, and anyone
+with a view link can read it. Clients must be able to reach the server. Accepted
+edits are durable and unsent edits wait in a local outbox; reconnect before
+closing to save them. Full offline editing and character-by-character merging of
+the same text are not implemented.
 
 ## Automatic updates
 

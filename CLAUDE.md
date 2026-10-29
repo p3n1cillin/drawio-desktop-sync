@@ -217,9 +217,30 @@ ipcMain.on('request', (e, data) => { ... });
 - **Windows:** `%APPDATA%\draw.io\`
 - Uses `electron-store` for persistent settings
 
+## Collaboration (drawio-desktop-sync fork)
+
+This fork adds self-hosted, Office-style co-authoring. The user guide is `src/server/README.md`.
+
+| File | Purpose |
+|------|---------|
+| `src/server/server.js` | HTTPS collaboration service (no npm dependencies): rooms, edit/view/owner roles, held `watch` requests for push updates, comments, people, Version History times |
+| `src/server/journal-store.js` | Immutable per-edit journal files; each edit gets a server clock and time |
+| `src/main/server-folder.js` | Desktop client for the service: durable outbox, view links, launch-state cache, `ServerMaps` for joined maps and shortcuts |
+| `src/main/shared-folder-ipc.js` | `shared-folder` IPC handler; injects the shared and renderer scripts into each editor window |
+| `src/main/identity.js` | Names people from the Windows UPN (`whoami /upn`) and Office user name |
+| `src/renderer/shared-folder.js` | Sync loop, presence and pointers, Share dialog, Version History hookup |
+| `src/renderer/collaboration-panels.js` | Show Changes pane and the comments backend for the core comments window |
+| `src/shared/journal-core.cjs` | Edit ordering (`order`, incremental `extend`) shared by server and editor |
+| `src/shared/conflicts.cjs`, `version-history.cjs`, `change-log.cjs` | Same-property conflicts, AutoSave-style version grouping, Show Changes descriptions |
+
+- Edits are journal patches (`ui.diffPages` format) applied in server-clock order; the server order is append-only, so each desktop keeps a confirmed copy and replays only newer edits. Never apply a patch to unconfirmed state
+- Renderer files are plain scripts loaded through `Draw.loadPlugin`; the `.cjs` modules attach to `window` in the editor and are `require`d by Node tests
+- The server is deployed separately from desktop releases; keep new server actions backward compatible (older desktops must keep working) and let new desktops degrade when an older server answers `Endpoint not found`
+- Nothing may be specific to one organisation, map or person: names come from each PC's signed-in account
+
 ## Testing
 
-`npm test` runs the unit tests in `src/test/` (CLI argument parsing, CLI export symlink handling, GUI backups and path authorisation, config-declared readable paths, per-window file watching, window bounds restore, print paper size and orientation, urlParams.json locations, Windows arm64 update channel, per-install update mode, MSI shortcut icon hook, System32 path helper; Node's built-in test runner). The `test` script in `package.json` names each file, so a new test file must be added there too. Everything else is manual testing, documented in `doc/RELEASE_PROCESS.md`:
+`npm test` runs the unit tests in `src/test/` (CLI argument parsing, CLI export symlink handling, GUI backups and path authorisation, config-declared readable paths, per-window file watching, window bounds restore, print paper size and orientation, urlParams.json locations, Windows arm64 update channel, per-install update mode, MSI shortcut icon hook, System32 path helper; Node's built-in test runner). The `test` script in `package.json` names each file, so a new test file must be added there too. The fork's collaboration tests are `server-folder.test.js`, `journal-store.test.js`, `shared-folder-renderer.test.js`, `shared-folder-ipc.test.js`, `version-history.test.js` and `collaboration.test.js`; `npm run test:server-ui` runs two real editors against an HTTPS server in Electron (push latency, presence, Version History restore, Show Changes, comments, mentions). Everything else is manual testing, documented in `doc/RELEASE_PROCESS.md`:
 - Launch, create diagram, add shapes, save, open
 - Export (PNG, PDF, SVG)
 - Undo/redo functionality
