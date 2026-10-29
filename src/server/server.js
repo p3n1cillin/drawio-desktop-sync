@@ -171,7 +171,7 @@ export async function createCollaborationServer({directory, key, cert, adminToke
 				await folder.open(xml);
 				const editToken = secret();
 				const ownerToken = secret();
-				const name = String(input.name || 'Shared map').replace(/[\x00-\x1f]/g, '').slice(0, 120);
+				const name = String(input.name || 'Shared diagram').replace(/[\x00-\x1f]/g, '').slice(0, 120);
 				await writeJson(path.join(roomDir, 'access.json'), {name, editHash: hash(editToken), ownerHash: hash(ownerToken)});
 				res.end(JSON.stringify({room: id, token: editToken, ownerToken, name}));
 				return;
@@ -182,7 +182,7 @@ export async function createCollaborationServer({directory, key, cert, adminToke
 			const roomDir = path.join(directory, id);
 			let room;
 			try { room = await roomFor(id); }
-			catch { throw Object.assign(new Error('Map is unavailable'), {status: 404}); }
+			catch { throw Object.assign(new Error('Diagram is unavailable'), {status: 404}); }
 			// A view link is a read credential; it is kept so editors can share it again.
 			const authorize = () =>
 			{
@@ -274,7 +274,7 @@ export async function createCollaborationServer({directory, key, cert, adminToke
 					}
 					case 'rotate':
 					{
-						check(role === 'owner', 'Only the map owner can revoke sharing links', 403);
+						check(role === 'owner', 'Only the diagram owner can revoke sharing links', 403);
 						if (input.kind === 'view')
 						{
 							const {viewToken: _view, ...updated} = room.access;
@@ -338,7 +338,7 @@ export async function createCollaborationServer({directory, key, cert, adminToke
 						}
 						if (item)
 						{
-							check(room.comments.length < 5000, 'This map has reached its comment limit');
+							check(room.comments.length < 5000, 'This diagram has reached its comment limit');
 							room.comments.push(item);
 						}
 						await writeJson(path.join(roomDir, 'comments.json'), {comments: room.comments});

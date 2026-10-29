@@ -174,7 +174,7 @@ test('version history replays each version from the journal and restores it as a
 	assert.equal(file.isRevisionHistorySupported(), true);
 	const revs = await new Promise((resolve, reject) => file.getRevisions(resolve, reject));
 	assert.deepEqual(revs.map(rev => [rev.lastModifyingUserName, rev.modifiedDate]),
-		[['Shared map created', start - 1000], ['Alice', first.time], ['Bob', second.time]]);
+		[['Shared diagram created', start - 1000], ['Alice', first.time], ['Bob', second.time]]);
 	const xmlOf = rev => new Promise((resolve, reject) => rev.getXml(resolve, reject));
 	assert.equal(await xmlOf(revs[0]), '{"desk":"base"}');
 	assert.equal(await xmlOf(revs[2]), '{"desk":"two"}');

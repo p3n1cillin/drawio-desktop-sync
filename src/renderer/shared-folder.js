@@ -15,7 +15,7 @@ Draw.loadPlugin(function(ui)
 	const bar = document.createElement('div');
 	bar.style.cssText = 'position:fixed;top:7px;right:150px;z-index:4;display:flex;align-items:center;gap:10px;padding:3px 6px;color:light-dark(#222,#eee);font:12px Arial,sans-serif;max-width:calc(100vw - 410px)';
 	const status = document.createElement('span');
-	status.textContent = 'Open a shared map to collaborate';
+	status.textContent = 'Open a shared diagram to collaborate';
 	status.style.cssText = 'max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
 	bar.appendChild(status);
 	const people = document.createElement('div');
@@ -32,7 +32,7 @@ Draw.loadPlugin(function(ui)
 		for (const listener of listeners)
 		{
 			try { listener(type, s); }
-			catch (error) { console.error('Shared map listener failed', error); }
+			catch (error) { console.error('Shared diagram listener failed', error); }
 		}
 	}
 	function displayName(s)
@@ -101,7 +101,7 @@ Draw.loadPlugin(function(ui)
 			const words = peer.name.trim().split(/\s+/);
 			avatar.textContent = (words.length > 1 ? words[0][0] + words.at(-1)[0] : peer.name.slice(0, 2)).toUpperCase();
 			avatar.title = peer.name + (peer.email ? ' <' + peer.email + '>' : '') + (isYou ? ' (you)' : peer.role === 'view' ? ' · viewing (view only)' :
-				peer.editing ? ' · editing an object' : peer.selection.length ? ' · selecting an object' : ' · viewing this map');
+				peer.editing ? ' · editing an object' : peer.selection.length ? ' · selecting an object' : ' · viewing this diagram');
 			if (!isYou)
 			{
 				avatar.style.cursor = 'pointer';
@@ -475,7 +475,7 @@ Draw.loadPlugin(function(ui)
 		const ordered = s.ordered;
 		const required = JSON.parse(ui.fileNode.getAttribute('sharemap-heads') || '[]');
 		const savedRoom = ui.fileNode.getAttribute('sharemap-room');
-		if (savedRoom && savedRoom !== s.manifest.room) throw new Error('This copy belongs to a different shared map. Reopen the map from its shared-map link.');
+		if (savedRoom && savedRoom !== s.manifest.room) throw new Error('This copy belongs to a different shared diagram. Reopen it from its shared-diagram link.');
 		const available = new Set(ordered.ready.map(op => op.id));
 		if (!Array.isArray(required) || !required.every(id => available.has(id)) || ordered.pending)
 		{
@@ -561,7 +561,7 @@ Draw.loadPlugin(function(ui)
 			return mxUtils.getXml(node);
 		};
 		const revs = groups.map(version => ({id: String(version.index), modifiedDate: version.end, edits: version.edits,
-			lastModifyingUserName: version.edits ? version.names.join(', ') : 'Shared map created',
+			lastModifyingUserName: version.edits ? version.names.join(', ') : 'Shared diagram created',
 			getXml: (success, error) => { try { success(xmlAt(version.index)); } catch (e) { error(e); } }}));
 		revs.shareMap = true;
 		return revs;
@@ -652,7 +652,7 @@ Draw.loadPlugin(function(ui)
 			if (session && (session.file !== file || !file.isEditable()))
 			{
 				await call('close', {}, session);
-				endSession('Open a shared map to collaborate');
+				endSession('Open a shared diagram to collaborate');
 			}
 			return;
 		}
@@ -685,7 +685,7 @@ Draw.loadPlugin(function(ui)
 					file.shareMapGuard = false;
 					ui.setGraphEnabled(file.isEditable());
 					autoSave.style.display = 'none';
-					status.textContent = 'Open a shared map to collaborate';
+					status.textContent = 'Open a shared diagram to collaborate';
 				}
 				return session;
 			}
@@ -707,7 +707,7 @@ Draw.loadPlugin(function(ui)
 	async function diagnostics()
 	{
 		const s = session;
-		if (!s) throw new Error('Open a shared map first.');
+		if (!s) throw new Error('Open a shared diagram first.');
 		status.textContent = 'Checking sync…';
 		const report = await call('diagnostics', {editor: editorDiagnostics(s)}, s);
 		if (!active(s)) return;
@@ -746,10 +746,10 @@ Draw.loadPlugin(function(ui)
 		const div = document.createElement('div');
 		div.style.cssText = 'padding:20px;font:14px Arial;line-height:1.5';
 		const title = document.createElement('h2');
-		title.textContent = 'Open shared map';
+		title.textContent = 'Open shared diagram';
 		div.appendChild(title);
 		const note = document.createElement('p');
-		note.textContent = 'Paste the shared-map link from your colleague. Your map opens from the collaboration server and reconnects automatically next time.';
+		note.textContent = 'Paste the shared-diagram link that was sent to you. The diagram opens from the collaboration server and reconnects automatically next time.';
 		div.appendChild(note);
 		const input = document.createElement('textarea');
 		input.placeholder = 'drawio-sync://join/…';
@@ -777,13 +777,13 @@ Draw.loadPlugin(function(ui)
 	async function serverCreate()
 	{
 		const file = ui.getCurrentFile();
-		if (!file?.fileObject) throw new Error('Open or save the map first.');
+		if (!file?.fileObject) throw new Error('Open or save the diagram first.');
 		graph.stopEditing();
 		ui.setGraphEnabled(false);
 		try
 		{
 			const info = await call('serverCreate', {path: file.fileObject.path, xml: ui.getFileData(true)}, null);
-			if (ui.getCurrentFile() !== file) throw new Error('The server map was created. Reopen it from Recent files after finishing this document.');
+			if (ui.getCurrentFile() !== file) throw new Error('The shared diagram was created on the server. Reopen it from Recent files after finishing this document.');
 			file.setModified(false);
 			ui.loadArgs({args: [info.path]});
 		}
@@ -802,7 +802,7 @@ Draw.loadPlugin(function(ui)
 	{
 		const s = session;
 		const div = element('div', '', 'padding:20px;font:14px Arial;line-height:1.5');
-		element('h2', 'Share "' + (s.mapName || 'map') + '"', 'margin-top:0', div);
+		element('h2', 'Share "' + (s.mapName || 'diagram') + '"', 'margin-top:0', div);
 		const row = element('div', '', 'display:flex;gap:8px;align-items:center', div);
 		const kind = element('select', '', 'flex:1;padding:6px', row);
 		for (const [value, text] of [['edit', 'People with the link can edit'], ['view', 'People with the link can view']])
@@ -818,15 +818,15 @@ Draw.loadPlugin(function(ui)
 			ui.hideDialog();
 		}, row);
 		copy.className = 'geBtn gePrimaryBtn';
-		element('p', 'Anyone with the link who can reach ' + new URL(s.server).host + ' can open it in drawio-desktop-sync (… → Open shared map). ' +
-			'View links open the map read-only. Treat links like keys and share them only with people who should have access.', 'font-size:12px;opacity:.8', div);
+		element('p', 'Anyone with the link who can reach ' + new URL(s.server).host + ' can open it in drawio-desktop-sync (… → Open shared diagram). ' +
+			'View links open the diagram read-only. Treat links like keys and share them only with people who should have access.', 'font-size:12px;opacity:.8', div);
 		const people = element('div', '', 'max-height:140px;overflow:auto;border-top:1px solid #8884;padding-top:6px', div);
 		element('div', 'People with access', 'font-weight:600', people);
 		const list = element('div', 'Loading…', 'font-size:12px', people);
 		call('people', {}, s).then(known =>
 		{
 			const here = new Set((s.lastPeers || []).map(peer => peer.email).filter(Boolean));
-			list.textContent = known.length ? '' : 'Nobody with a work or school account has opened this map yet.';
+			list.textContent = known.length ? '' : 'Nobody with a work or school account has opened this diagram yet.';
 			for (const person of known) element('div', person.name + ' <' + person.email + '>' + (here.has(person.email) ? ' · here now' : ''), '', list);
 		}).catch(() => { list.textContent = 'Update the collaboration server to list people.'; });
 		if (s.owner)
@@ -845,8 +845,8 @@ Draw.loadPlugin(function(ui)
 	}
 	// The … menu lists actions in order; panels add their own before the settings items.
 	const menuItems = [
-		{label: 'Open shared map', action: () => serverJoinDialog()},
-		{label: 'Share current map on server', action: () => serverCreate(), when: () => !session},
+		{label: 'Open shared diagram', action: () => serverJoinDialog()},
+		{label: 'Share this diagram on the server', action: () => serverCreate(), when: () => !session},
 		{label: 'Version history', action: () => ui.actions.get('revisionHistory').funct(), when: () => session?.initialized},
 		{label: 'Your display name', action: () => nameDialog(), settings: true},
 		{label: 'Create desktop shortcut', action: () => call('shortcut'), when: () => session, settings: true},
@@ -884,7 +884,7 @@ Draw.loadPlugin(function(ui)
 	bar.insertBefore(autoSave, status);
 	const share = button('Share', async () => { if (session?.initialized) serverAccess(); else await serverCreate(); });
 	share.style.cssText += ';background:#107c41;color:#fff;border:0;border-radius:5px;padding:6px 18px;font-weight:600';
-	share.title = 'Share this map';
+	share.title = 'Share this diagram';
 	function addBarButton(label, action, title)
 	{
 		const result = button(label, action);
@@ -959,7 +959,7 @@ Draw.loadPlugin(function(ui)
 			}).catch(e => { if (error) error(e); else showError(e); });
 			return;
 		}
-		if (this.shareMapGuard || this === probing) { if (error) error({message: 'Wait for the shared map to finish connecting to the server'}); return; }
+		if (this.shareMapGuard || this === probing) { if (error) error({message: 'Wait for the shared diagram to finish connecting to the server'}); return; }
 		return saveOrdinary(this, arguments);
 	};
 	// File > Version History uses the editor's own revision dialog for the journal.

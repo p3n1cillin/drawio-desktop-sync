@@ -126,7 +126,7 @@ export class JournalStore
 			try { await this.readJson('snapshot-' + hash + '.json', 1024 * 1024); }
 			catch
 			{
-				throw new Error('The server map changed outside collaboration. Preserve that copy and restore a consistent server backup before retrying.');
+				throw new Error('The shared diagram changed outside collaboration. Preserve that copy and restore a consistent server backup before retrying.');
 			}
 		}
 		return current;
@@ -143,7 +143,7 @@ export class JournalStore
 		// The directory is verified once; entries that are not plain files are refused.
 		await this.safePath('manifest.json');
 		const edits = (await fs.readdir(this.directory, {withFileTypes: true})).filter(entry => entry.name.startsWith('edit-') && entry.name.endsWith('.json'));
-		if (edits.length > 10000) throw new Error('Journal limit reached. Export a copy to start a new shared map.');
+		if (edits.length > 10000) throw new Error('Journal limit reached. Export a copy to start a new shared diagram.');
 		if (edits.some(entry => !entry.isFile())) throw new Error('Unsafe journal file');
 		let bytes = 0;
 		const read = async entry =>
@@ -186,7 +186,7 @@ export class JournalStore
 		const write = async () =>
 		{
 			await this.scan();
-			if (this.cache.size >= 10000) throw new Error('Edit history limit reached. Save an archive copy before starting a new shared map.');
+			if (this.cache.size >= 10000) throw new Error('Edit history limit reached. Save an archive copy before starting a new shared diagram.');
 			const ordered = core.order([...this.cache.values()], this.manifest.room);
 			const ready = new Set(ordered.ready.map(op => op.id));
 			if (!Array.isArray(parents) || !parents.every(id => ready.has(id)))

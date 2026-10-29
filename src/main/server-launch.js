@@ -5,7 +5,7 @@ import core from '../shared/journal-core.cjs';
 // profiles. Windows command-line quoting doubles a trailing backslash.
 export function sharedMapShortcutArguments(userData, room)
 {
-	if (!core.validId(room) || typeof userData !== 'string' || !path.win32.isAbsolute(userData) || /["\x00-\x1f]/.test(userData)) throw new Error('Invalid shared-map shortcut');
+	if (!core.validId(room) || typeof userData !== 'string' || !path.win32.isAbsolute(userData) || /["\x00-\x1f]/.test(userData)) throw new Error('Invalid shared-diagram shortcut');
 	return '--user-data-dir="' + userData.replace(/(\\+)$/, '$1$1') + '" --shared-map=' + room;
 }
 

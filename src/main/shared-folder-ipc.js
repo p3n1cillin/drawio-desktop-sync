@@ -13,7 +13,7 @@ export function registerSharedFolder({ipcMain, validateSender, assertWritablePat
 	const initialThrottling = new WeakMap();
 	ipcMain.handle('shared-folder', async (event, request) =>
 	{
-		if (!validateSender(event.senderFrame) || event.senderFrame !== event.sender.mainFrame) throw new Error('Shared map access denied');
+		if (!validateSender(event.senderFrame) || event.senderFrame !== event.sender.mainFrame) throw new Error('Shared diagram access denied');
 		if (!request || typeof request !== 'object') throw new Error('Invalid request');
 		if (request.action === 'serverJoin' || request.action === 'serverCreate')
 		{
@@ -41,12 +41,12 @@ export function registerSharedFolder({ipcMain, validateSender, assertWritablePat
 		}
 		if (request.action === 'open')
 		{
-			if (typeof request.path !== 'string' || !/\.drawio$/i.test(request.path)) throw new Error('Open a .drawio map first');
+			if (typeof request.path !== 'string' || !/\.drawio$/i.test(request.path)) throw new Error('Open a .drawio diagram first');
 			await assertWritablePath(request.path);
 			const folder = await serverMaps?.open(request.path, clientId);
 			if (!folder) return null;
 			const info = await folder.open();
-			if (event.sender.isDestroyed()) throw new Error('Editor was closed while opening the shared map');
+			if (event.sender.isDestroyed()) throw new Error('Editor was closed while opening the shared diagram');
 			if (sessions.size === 0) initialThrottling.set(event.sender, event.sender.getBackgroundThrottling());
 			event.sender.setBackgroundThrottling(false);
 			const id = randomUUID();

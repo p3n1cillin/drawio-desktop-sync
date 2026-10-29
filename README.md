@@ -17,17 +17,17 @@ creates desktop and Start menu shortcuts. The ZIP is an optional portable build.
   property at once, **Review changes** keeps both and lets either choose.
 - **AutoSave**, on by default like Office, with undo and automatic reconnection.
   Turn it off to save with Ctrl+S.
-- **Presence.** Avatars of everyone in the map, their selections outlined with
+- **Presence.** Avatars of everyone in the diagram, their selections outlined with
   their name, a note when someone is editing the object you selected, and live
   named mouse pointers. Click an avatar to go to that person.
 - **Version History** (File › Version History): versions grouped like Office
   AutoSave versions, with who edited each. Preview any version, hold Compare to
-  see the current map, and restore it. A restore is saved as a new edit, so
+  see the current diagram, and restore it. A restore is saved as a new edit, so
   nothing is lost and everyone sees it.
 - **Show Changes** (… › Show changes, or right-click shapes): who changed what and
-  when, newest first, for the whole map or the selected shapes. Click a change to
+  when, newest first, for the whole diagram or the selected shapes. Click a change to
   go to that shape.
-- **Comments** on shapes or the map with replies, resolve and reopen, and
+- **Comments** on shapes or the diagram with replies, resolve and reopen, and
   **@mentions** that notify the person mentioned.
 - **Sharing.** **Share** copies a link that lets people edit or only view, lists
   the people with access, and lets the owner stop current edit or view links.
@@ -35,20 +35,20 @@ creates desktop and Start menu shortcuts. The ZIP is an optional portable build.
   work or school account and Office user name, falling back to the Windows user
   name; … › Your display name overrides it. These are labels; the link is the
   credential, not a verified Microsoft sign-in.
-- **Fast on large maps.** Each desktop applies only edits it has not seen, reopens
+- **Fast on large diagrams.** Each desktop applies only edits it has not seen, reopens
   from its own saved copy, and the server loads thousands of edits in a fraction
   of a second.
-- Desktop map shortcuts. A shortcut for a map this PC has not joined offers to
-  paste the shared-map link instead of failing. Standalone `.drawio` files keep
+- Desktop diagram shortcuts. A shortcut for a diagram this PC has not joined offers to
+  paste the shared-diagram link instead of failing. Standalone `.drawio` files keep
   normal draw.io behaviour, and Save As creates an independent copy.
 
 Set up your service using the [server guide](src/server/README.md). An owner opens
 a diagram and chooses **Share** to create its server copy, then copies a link.
-Colleagues choose **… › Open shared map**, paste the link once and accept the
+Colleagues choose **… › Open shared diagram**, paste the link once and accept the
 server connection. A desktop shortcut is created for later use. The header reads
 **Saved to server**. The original imported file is kept as a backup.
 
-Treat links like keys: anyone with an edit link can change that map, and anyone
+Treat links like keys: anyone with an edit link can change that diagram, and anyone
 with a view link can read it. Clients must be able to reach the server. Accepted
 edits are durable and unsent edits wait in a local outbox; reconnect before
 closing to save them. Full offline editing and character-by-character merging of
@@ -74,10 +74,10 @@ Configuration and editor preferences are mirrored to `editor-preferences.json`
 in the app's user-data folder, outside the installation directory. They restore
 before editor startup if Chromium storage is lost or its origin changes during
 an update. Explicit resets are remembered. Native update settings, server setup
-and map credentials also remain in the user profile; installers retain them.
+and diagram credentials also remain in the user profile; installers retain them.
 The backup copies preference entries, not separate login tokens or diagram drafts.
 An explicit Configuration `override` still intentionally overrides user settings.
-The shared-map AutoSave choice is remembered per map and installation. Spell
+The shared-diagram AutoSave choice is remembered per diagram and installation. Spell
 checking, backup and automatic-update switches update existing window menus live.
 Updates to application code still take effect after installing and reopening it.
 

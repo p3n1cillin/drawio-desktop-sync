@@ -161,6 +161,10 @@ test('a shared-map shortcut restores a missing cache; it does not create arbitra
 	assert.equal(await h.owner.restoreRoom(room), filename);
 	await fs.unlink(filename); await h.owner.restorePath(filename);
 	assert.match(await fs.readFile(filename, 'utf8'), /mxfile/);
+	assert.match(path.basename(filename), /^Diagram - /);
+	const legacy = path.join(path.dirname(filename), 'Map - Any map.drawio');
+	await fs.rename(filename, legacy);
+	assert.equal(await h.owner.restoreRoom(room), legacy, 'caches joined by earlier releases keep opening');
 	const unknown = path.join(h.directory, 'not-authorized.drawio'); await h.owner.restorePath(unknown);
 	assert.equal(await fs.stat(unknown).then(() => true).catch(() => false), false);
 	await assert.rejects(h.owner.restoreRoom('../escape'), /Invalid/);

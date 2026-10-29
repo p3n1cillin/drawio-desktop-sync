@@ -918,7 +918,7 @@ app.whenReady().then(async () =>
 	try { argv = await prepareServerArguments([...process.argv], serverMaps); }
 	catch (error)
 	{
-		log.error('Shared-map launch failed:', error);
+		log.error('Shared-diagram launch failed:', error);
 		if (!await offerSharedMapJoin(error)) { app.quit(); return; }
 		argv = process.argv.filter(arg => !String(arg).startsWith('--shared-map='));
 	}
@@ -1597,7 +1597,7 @@ app.whenReady().then(async () =>
 			try { commandLine = await prepareServerArguments(commandLine, serverMaps); }
 			catch (error)
 			{
-				log.error('Shared-map launch failed:', error);
+				log.error('Shared-diagram launch failed:', error);
 				if (!await offerSharedMapJoin(error)) return;
 				commandLine = commandLine.filter(arg => !String(arg).startsWith('--shared-map='));
 			}
@@ -4519,12 +4519,12 @@ async function offerSharedMapJoin(error)
 {
 	if (error.cause?.code !== 'ENOENT')
 	{
-		dialog.showErrorBox('Cannot open shared map', error.message);
+		dialog.showErrorBox('Cannot open shared diagram', error.message);
 		return false;
 	}
-	const {response} = await dialog.showMessageBox({type: 'info', title: 'Open shared map', buttons: ['Paste link…', 'Cancel'], defaultId: 0, cancelId: 1,
-		message: 'This PC has not joined this shared map yet',
-		detail: 'Paste the shared-map link that was sent to you. After joining, this shortcut opens the map directly.'});
+	const {response} = await dialog.showMessageBox({type: 'info', title: 'Open shared diagram', buttons: ['Paste link…', 'Cancel'], defaultId: 0, cancelId: 1,
+		message: 'This PC has not joined this shared diagram yet',
+		detail: 'Paste the shared-diagram link that was sent to you. After joining, this shortcut opens the diagram directly.'});
 	if (response !== 0) return false;
 	joinOnLoad++;
 	return true;
@@ -4537,12 +4537,12 @@ if (typeof sharedFolderClientId !== 'string' || !/^[a-f0-9-]{36}$/.test(sharedFo
 	store?.set('sharedFolderClientId', sharedFolderClientId);
 }
 const serverMaps = new ServerMaps(app.getPath('userData'), app.getPath('userData') + '-maps',
-	{onReadRetry: details => log.warn('Retrying shared-map connection read:', details)});
+	{onReadRetry: details => log.warn('Retrying shared-diagram connection read:', details)});
 function createServerShortcut(folder)
 {
 	if (process.platform !== 'win32') return null;
 	const title = folder.connection.name.replace(/\.drawio$/i, '').replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').slice(0, 100);
-	const stem = path.join(app.getPath('desktop'), title + ' (shared map)');
+	const stem = path.join(app.getPath('desktop'), title + ' (shared diagram)');
 	const args = sharedMapShortcutArguments(app.getPath('userData'), folder.connection.room);
 	let shortcut = stem + '.lnk';
 	for (let index = 2; fs.existsSync(shortcut); index++)
@@ -4551,7 +4551,7 @@ function createServerShortcut(folder)
 		shortcut = stem + ' (' + index + ').lnk';
 	}
 	if (!shell.writeShortcutLink(shortcut, 'create', {target: process.execPath, args,
-		icon: process.execPath, iconIndex: 0, description: 'Open shared map from the collaboration server'})) throw new Error('Windows could not create the map shortcut');
+		icon: process.execPath, iconIndex: 0, description: 'Open shared diagram from the collaboration server'})) throw new Error('Windows could not create the diagram shortcut');
 	return shortcut;
 }
 registerSharedFolder({ipcMain, validateSender, assertWritablePath, clipboard, shell, clientId: sharedFolderClientId,
@@ -4561,8 +4561,8 @@ registerSharedFolder({ipcMain, validateSender, assertWritablePath, clipboard, sh
 		const endpoint = request.action === 'rotateLink' ? request.server : request.action === 'serverJoin' ? parseInvite(request.invite).server :
 			JSON.parse(await fsProm.readFile(serverMaps.setupPath, 'utf8')).server;
 		return (await dialog.showMessageBox({type: 'question', buttons: [request.action === 'rotateLink' ? 'Revoke links' : 'Connect', 'Cancel'], defaultId: 0, cancelId: 1,
-			message: request.action === 'rotateLink' ? 'Revoke all existing edit links?' : request.action === 'serverJoin' ? 'Open this shared map?' : 'Create a shared map on your server?',
-			detail: endpoint + (request.action === 'rotateLink' ? '\nColleagues will need a new link to reconnect.' : '\nThe server stores the diagram and its edit history. People with the map link can edit it. A desktop shortcut will be created.')})).response === 0;
+			message: request.action === 'rotateLink' ? 'Revoke all existing edit links?' : request.action === 'serverJoin' ? 'Open this shared diagram?' : 'Create a shared diagram on your server?',
+			detail: endpoint + (request.action === 'rotateLink' ? '\nColleagues will need a new link to reconnect.' : '\nThe server stores the diagram and its edit history. People with an edit link can edit it. A desktop shortcut will be created.')})).response === 0;
 	}});
 
 ipcMain.on("rendererReq", async (event, args) =>

@@ -156,7 +156,7 @@ Draw.loadPlugin(function(ui)
 	}
 	function showChanges(selectionOnly)
 	{
-		if (!current()) throw new Error('Open a shared map first.');
+		if (!current()) throw new Error('Open a shared diagram first.');
 		if (!pane) buildPane();
 		onlySelection = !!selectionOnly;
 		ui.menus.commentsWindow?.window.setVisible(false);

@@ -9,11 +9,11 @@ export function validateConnection(value)
 {
 	if (!value || value.version !== 1 || !core.validId(value.room) ||
 		!/^[-_a-zA-Z0-9]{40,100}$/.test(value.token) || typeof value.ca !== 'string' || value.ca.length > 16384 ||
-		!value.ca.includes('-----BEGIN CERTIFICATE-----')) throw new Error('Invalid shared-map link');
+		!value.ca.includes('-----BEGIN CERTIFICATE-----')) throw new Error('Invalid shared-diagram link');
 	const url = new URL(value.server);
 	if (url.protocol !== 'https:' || url.username || url.password || url.pathname !== '/' || url.search || url.hash) throw new Error('Use an HTTPS collaboration server');
 	return {version: 1, server: url.origin, room: value.room, token: value.token, ca: value.ca,
-		name: String(value.name || 'Shared map').slice(0, 120),
+		name: String(value.name || 'Shared diagram').slice(0, 120),
 		...(value.ownerToken && /^[-_a-zA-Z0-9]{40,100}$/.test(value.ownerToken) ? {ownerToken: value.ownerToken} : {})};
 }
 export function shareInvite(connection, token = connection.token)
@@ -23,9 +23,9 @@ export function shareInvite(connection, token = connection.token)
 }
 export function parseInvite(text)
 {
-	if (typeof text !== 'string' || !text.startsWith(prefix) || text.length > 32768) throw new Error('Paste a drawio-sync shared-map link');
+	if (typeof text !== 'string' || !text.startsWith(prefix) || text.length > 32768) throw new Error('Paste a drawio-sync shared-diagram link');
 	try { return validateConnection(JSON.parse(Buffer.from(text.slice(prefix.length), 'base64url').toString('utf8'))); }
-	catch { throw new Error('Invalid shared-map link'); }
+	catch { throw new Error('Invalid shared-diagram link'); }
 }
 export async function serverRequest(connection, route, body, token = connection.ownerToken || connection.token, timeout = 15000)
 {
@@ -201,7 +201,7 @@ export class ServerMaps
 	}
 	async readConnection(room)
 	{
-		if (!core.validId(room)) throw new Error('Invalid shared-map shortcut');
+		if (!core.validId(room)) throw new Error('Invalid shared-diagram shortcut');
 		const filename = path.join(this.directory, room, 'connection.json');
 		let raw;
 		for (let attempt = 0; ; attempt++)
@@ -216,14 +216,14 @@ export class ServerMaps
 					await this.wait([50, 150, 400][attempt]);
 					continue;
 				}
-				if (error.code === 'ENOENT') throw new Error('This PC has no saved connection for this shared map. Join using its invitation link, then reopen the shortcut.', {cause: error});
-				throw new Error('Cannot read the saved shared-map connection (' + (error.code || 'file access error') + '). Retry or check access to your app profile. The server map has not been changed.', {cause: error});
+				if (error.code === 'ENOENT') throw new Error('This PC has no saved connection for this shared diagram. Join using its invitation link, then reopen the shortcut.', {cause: error});
+				throw new Error('Cannot read the saved shared-diagram connection (' + (error.code || 'file access error') + '). Retry or check access to your app profile. The shared diagram has not been changed.', {cause: error});
 			}
 		}
 		let connection;
 		try { connection = validateConnection(JSON.parse(raw)); }
-		catch { throw new Error('The saved shared-map connection is invalid or damaged. Restore its connection settings from backup. The server map has not been changed.'); }
-		if (connection.room !== room) throw new Error('The shared-map cache belongs to a different room');
+		catch { throw new Error('The saved shared-diagram connection is invalid or damaged. Restore its connection settings from backup. The shared diagram has not been changed.'); }
+		if (connection.room !== room) throw new Error('The shared-diagram cache belongs to a different room');
 		return connection;
 	}
 	async cache(connection, client)
@@ -240,8 +240,8 @@ export class ServerMaps
 		// Fetch the actual title from the server, rather than trusting link text.
 		const probe = new ServerFolder(path.join(directory, 'map.drawio'), connection, client);
 		const info = await probe.open();
-		const safeName = String(info.name || 'Shared map').replace(/[^a-zA-Z0-9 _.-]/g, '_').replace(/\.drawio$/i, '').replace(/[. ]+$/, '');
-		const filename = path.join(directory, 'Map - ' + (safeName || 'Shared map') + '.drawio');
+		const safeName = String(info.name || 'Shared diagram').replace(/[^a-zA-Z0-9 _.-]/g, '_').replace(/\.drawio$/i, '').replace(/[. ]+$/, '');
+		const filename = path.join(directory, 'Diagram - ' + (safeName || 'Shared diagram') + '.drawio');
 		connection.name = info.name;
 		// Keep a launchable base cache. Server snapshots, never this file, are authoritative.
 		await fs.writeFile(filename, info.manifest.base, {flag: 'wx'}).catch(error => { if (error.code !== 'EEXIST') throw error; });
@@ -251,10 +251,11 @@ export class ServerMaps
 	async join(invite, client) { return this.cache(parseInvite(invite), client); }
 	async restoreRoom(room)
 	{
-		if (!core.validId(room)) throw new Error('Invalid shared-map shortcut');
+		if (!core.validId(room)) throw new Error('Invalid shared-diagram shortcut');
 		const connection = await this.readConnection(room);
 		const files = await fs.readdir(path.join(this.directory, room));
-		const name = files.find(name => /^Map - .*\.drawio$/i.test(name));
+		// Caches joined before 32.6.1 are named "Map - …"; recents and shortcuts still point at them.
+		const name = files.find(name => /^(?:Diagram|Map) - .*\.drawio$/i.test(name));
 		return name ? path.join(this.directory, room, name) : this.cache(connection);
 	}
 	async restorePath(filename)
@@ -272,7 +273,7 @@ export class ServerMaps
 	{
 		let setup;
 		try { setup = JSON.parse(await fs.readFile(this.setupPath, 'utf8')); }
-		catch { throw new Error('This PC has no server setup. Ask the server administrator to configure it, or use Open shared map with an invitation link.'); }
+		catch { throw new Error('This PC has no server setup. Ask the server administrator to configure it, or use Open shared diagram with an invitation link.'); }
 		const result = await serverRequest(setup, '/v1/create', {xml, name}, setup.adminToken);
 		return this.cache({version: 1, server: setup.server, ca: setup.ca, ...result}, client);
 	}

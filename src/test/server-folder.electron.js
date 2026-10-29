@@ -173,7 +173,7 @@ try
 	await a('testUi.actions.get("revisionHistory").funct();true');
 	await until(() => a('document.querySelectorAll(".geSyncVersionAuthors").length >= 2'), 'version history dialog');
 	const versionRows = await a('[...document.querySelectorAll(".geSyncVersionAuthors")].map(node=>node.textContent)');
-	assert.equal(versionRows.at(-1), 'Shared map created');
+	assert.equal(versionRows.at(-1), 'Shared diagram created');
 	assert.match(versionRows[0], / edits$/);
 	await a('[...document.querySelectorAll(".geSyncVersionAuthors")].at(-1).closest("tr").dispatchEvent(new MouseEvent("click",{bubbles:true}));true');
 	const restoreButton = '[...document.querySelectorAll(".geDialog button")].find(button=>button.textContent===mxResources.get("restore"))';

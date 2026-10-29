@@ -225,7 +225,7 @@ This fork adds self-hosted, Office-style co-authoring. The user guide is `src/se
 |------|---------|
 | `src/server/server.js` | HTTPS collaboration service (no npm dependencies): rooms, edit/view/owner roles, held `watch` requests for push updates, comments, people, Version History times |
 | `src/server/journal-store.js` | Immutable per-edit journal files; each edit gets a server clock and time |
-| `src/main/server-folder.js` | Desktop client for the service: durable outbox, view links, launch-state cache, `ServerMaps` for joined maps and shortcuts |
+| `src/main/server-folder.js` | Desktop client for the service: durable outbox, view links, launch-state cache, `ServerMaps` for joined diagrams and shortcuts |
 | `src/main/shared-folder-ipc.js` | `shared-folder` IPC handler; injects the shared and renderer scripts into each editor window |
 | `src/main/identity.js` | Names people from the Windows UPN (`whoami /upn`) and Office user name |
 | `src/renderer/shared-folder.js` | Sync loop, presence and pointers, Share dialog, Version History hookup |
@@ -236,7 +236,7 @@ This fork adds self-hosted, Office-style co-authoring. The user guide is `src/se
 - Edits are journal patches (`ui.diffPages` format) applied in server-clock order; the server order is append-only, so each desktop keeps a confirmed copy and replays only newer edits. Never apply a patch to unconfirmed state
 - Renderer files are plain scripts loaded through `Draw.loadPlugin`; the `.cjs` modules attach to `window` in the editor and are `require`d by Node tests
 - The server is deployed separately from desktop releases; keep new server actions backward compatible (older desktops must keep working) and let new desktops degrade when an older server answers `Endpoint not found`
-- Nothing may be specific to one organisation, map or person: names come from each PC's signed-in account
+- Nothing may be specific to one organisation, diagram or person: names come from each PC's signed-in account
 
 ## Testing
 
