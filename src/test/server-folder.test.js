@@ -230,6 +230,107 @@ test('genuinely missing and damaged connection records have distinct errors and 
 	assert.equal(reads, 4);
 });
 
+test('edits carry their server time and history dates older edits from their saved records', async t =>
+{
+	const h = await fixture(t); const filename = await h.owner.create({xml, name: 'History.drawio'});
+	const a = await h.owner.open(filename); await a.open();
+	const before = Date.now();
+	const first = await a.append({u: {one: {value: 'First'}}}, [], 'Alice', randomUUID());
+	assert.equal(first.time >= before && first.time <= Date.now(), true);
+	// A record written by an earlier server release has no time field.
+	const collab = path.join(h.directory, 'data', a.connection.room, 'map.drawio.collab');
+	const legacy = {version: 1, room: a.manifest.room, id: randomUUID(), author: randomUUID(), name: 'Bob', clock: first.clock + 1, parents: [first.id], patch: {u: {two: {value: 'Old'}}}};
+	await fs.writeFile(path.join(collab, 'edit-' + legacy.id + '.json'), JSON.stringify(legacy));
+	const saved = new Date(Date.UTC(2026, 9, 1, 12));
+	await fs.utimes(path.join(collab, 'edit-' + legacy.id + '.json'), saved, saved);
+	await h.restart();
+	await a.open();
+	const history = await a.history();
+	assert.deepEqual(history.times, {[legacy.id]: saved.getTime()});
+	assert.equal(history.created <= first.time, true);
+	assert.equal((await a.scan()).length, 2);
+});
+
+test('view links read and follow presence but cannot write; owners can stop them', async t =>
+{
+	const h = await fixture(t); const filename = await h.owner.create({xml, name: 'Roles.drawio'});
+	const owner = await h.owner.open(filename); await owner.open();
+	const viewLink = await owner.shareLink('view');
+	assert.notEqual(parseInvite(viewLink).token, owner.connection.token);
+	assert.equal(await owner.shareLink('view'), viewLink, 'the view link stays the same until it is stopped');
+	const viewer = new ServerFolder(filename, parseInvite(viewLink), randomUUID());
+	assert.equal((await viewer.open()).role, 'view');
+	await owner.append({u: {a: {value: 'Owner'}}}, [], 'Owner', randomUUID());
+	assert.equal((await viewer.scan()).length, 1);
+	assert.equal((await viewer.activity('Viewer', 'page', [])).some(peer => peer.role === 'view'), true);
+	await assert.rejects(viewer.append({u: {a: {value: 'Viewer'}}}, [], 'Viewer', randomUUID()), /view-only/);
+	viewer.role = 'edit';
+	await assert.rejects(viewer.append({u: {a: {value: 'Viewer'}}}, [], 'Viewer', randomUUID()), /view-only/, 'the server enforces the role as well');
+	await assert.rejects(viewer.comment({op: 'add', content: 'Hi'}), /view-only/);
+	await assert.rejects(viewer.rotateLink('view'), /view-only/);
+	const editor = new ServerFolder(filename, parseInvite(await owner.shareLink('edit')), randomUUID());
+	assert.equal((await editor.open()).role, 'edit');
+	await assert.rejects(editor.rotateLink('view'), /owner/);
+	await owner.rotateLink('view');
+	await assert.rejects(viewer.scan(), /revoked/);
+	assert.notEqual(await owner.shareLink('view'), viewLink);
+	assert.equal((await editor.scan()).length, 1, 'stopping view links leaves edit links working');
+});
+
+test('watch answers as soon as another editor changes the map, comments or presence', async t =>
+{
+	const h = await fixture(t); const filename = await h.owner.create({xml, name: 'Watch.drawio'});
+	const a = await h.owner.open(filename); await a.open();
+	const b = await h.owner.open(filename); await b.open();
+	const first = await b.watch({});
+	const idle = b.watch(first);
+	let settled = false;
+	idle.then(() => { settled = true; });
+	await new Promise(resolve => setTimeout(resolve, 150));
+	assert.equal(settled, false, 'an unchanged map holds the request');
+	const started = Date.now();
+	await a.append({u: {a: {value: 'Now'}}}, [], 'A', randomUUID());
+	const next = await idle;
+	assert.equal(next.cursor, first.cursor + 1);
+	assert.ok(Date.now() - started < 1000);
+	const comment = b.watch(next);
+	await a.comment({op: 'add', content: 'Note', name: 'A', email: 'a@example.test'});
+	const afterComment = await comment;
+	assert.equal(afterComment.comments, next.comments + 1);
+	const presence = b.watch(afterComment);
+	await a.activity('A', 'page', ['desk'], false, '', {x: 10.4, y: 20.6}, 'a@example.test');
+	const afterPresence = await presence;
+	assert.deepEqual(afterPresence.peers.find(peer => peer.author === a.author).pointer, {x: 10, y: 21});
+});
+
+test('comment threads keep authorship, anchors and resolution; only authors edit and owners may delete', async t =>
+{
+	const h = await fixture(t); const filename = await h.owner.create({xml, name: 'Comments.drawio'});
+	const owner = await h.owner.open(filename); await owner.open();
+	const editor = new ServerFolder(filename, parseInvite(await owner.shareLink()), randomUUID()); await editor.open();
+	const ann = {name: 'Ann', email: 'Ann@Example.test'};
+	const ben = {name: 'Ben', email: 'ben@example.test'};
+	const {id} = await owner.comment({op: 'add', content: 'Check this, +ben@example.test', anchor: {p: 'page', c: 'desk'}, ...ann});
+	const reply = await editor.comment({op: 'reply', parent: id, content: 'Done', resolve: true, ...ben});
+	let comments = (await editor.comments()).comments;
+	const top = comments.find(comment => comment.id === id);
+	assert.equal(comments.length, 2);
+	assert.equal(top.resolved, true);
+	assert.deepEqual(top.anchor, {p: 'page', c: 'desk'});
+	assert.deepEqual(top.author, {id: 'ann@example.test', name: 'Ann', email: 'ann@example.test'});
+	await assert.rejects(editor.comment({op: 'edit', comment: id, content: 'Changed', ...ben}), /own comments/);
+	await editor.comment({op: 'edit', comment: reply.id, content: 'Fixed', ...ben});
+	const other = await editor.comment({op: 'add', content: 'Separate', ...ben});
+	await owner.comment({op: 'delete', comment: other.id, ...ann});
+	await owner.comment({op: 'delete', comment: id, ...ann});
+	assert.deepEqual((await editor.comments()).comments, [], 'deleting a thread removes its replies');
+	await assert.rejects(owner.comment({op: 'add', content: 'x', anchor: {big: 'x'.repeat(3000)}, ...ann}), /anchor/);
+	await h.restart();
+	await owner.open();
+	assert.deepEqual((await owner.comments()).comments, []);
+	assert.deepEqual((await owner.people()).map(person => person.email).sort(), ['ann@example.test', 'ben@example.test']);
+});
+
 test('warm idle incremental polls do not reread files or return existing edits', async t =>
 {
 	const h = await fixture(t); const filename = await h.owner.create({xml, name: 'Any map.drawio'});

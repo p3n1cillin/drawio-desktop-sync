@@ -4,8 +4,11 @@ import {randomUUID} from 'node:crypto';
 import {userInfo} from 'node:os';
 
 export function registerSharedFolder({ipcMain, validateSender, assertWritablePath, clipboard,
-	clientId, serverMaps, clientBuild = 'unknown', confirmServer = async () => false, blessServerMap = () => {}, createShortcut = () => null})
+	clientId, serverMaps, clientBuild = 'unknown', confirmServer = async () => false, blessServerMap = () => {}, createShortcut = () => null,
+	identity = async () => ({name: userInfo().username, email: ''})})
 {
+	let me = null;
+	const whoami = () => (me = me || identity().catch(() => ({name: userInfo().username, email: ''})));
 	const owners = new Map();
 	const initialThrottling = new WeakMap();
 	ipcMain.handle('shared-folder', async (event, request) =>
@@ -48,7 +51,8 @@ export function registerSharedFolder({ipcMain, validateSender, assertWritablePat
 			event.sender.setBackgroundThrottling(false);
 			const id = randomUUID();
 			sessions.set(id, folder);
-			return {id, ...info, mapName: info.name, name: userInfo().username};
+			const user = await whoami();
+			return {id, ...info, mapName: info.name, name: user.name, email: user.email};
 		}
 		const folder = sessions.get(request.id);
 		if (!folder) throw new Error('Shared session is closed');
@@ -64,17 +68,30 @@ export function registerSharedFolder({ipcMain, validateSender, assertWritablePat
 			return true;
 		}
 		await assertWritablePath(folder.filename);
+		const user = await whoami();
 		switch (request.action)
 		{
 			case 'scan': return {records: await folder.updates(), peers: folder.peers || []};
-			case 'activity': return folder.activity(request.name || userInfo().username, request.page, request.selection, request.editing, request.editingCell);
-			case 'append': return folder.append(request.patch, request.parents, request.name || userInfo().username, request.operationId);
+			case 'activity': return folder.activity(request.name || user.name, request.page, request.selection, request.editing, request.editingCell, request.pointer, user.email);
+			case 'append': return folder.append(request.patch, request.parents, request.name || user.name, request.operationId, user.email);
+			case 'launchState': return folder.launchState();
+			case 'saveLaunchState': return folder.saveLaunchState({count: request.count, last: request.last, xml: request.xml});
+			case 'watch': return folder.watch({cursor: request.cursor, epoch: request.epoch, comments: request.comments, presence: request.presence});
+			case 'comments': return folder.comments();
+			case 'people': return folder.people();
+			case 'comment': return folder.comment({op: request.op, content: request.content, anchor: request.anchor, parent: request.parent,
+				comment: request.comment, resolve: !!request.resolve, reopen: !!request.reopen, name: request.name || user.name, email: user.email});
 			case 'snapshot': return folder.snapshot(request.xml, request.heads);
-			case 'copyLink': clipboard.writeText(await folder.shareLink()); return true;
+			case 'history':
+			{
+				const {created, times} = await folder.history();
+				return {created, times};
+			}
+			case 'copyLink': clipboard.writeText(await folder.shareLink(request.kind === 'view' ? 'view' : 'edit')); return true;
 			case 'shortcut': return createShortcut(folder);
 			case 'rotateLink':
 				if (!await confirmServer({action: 'rotateLink', server: folder.connection.server})) throw new Error('Link revocation was cancelled');
-				return folder.rotateLink();
+				return folder.rotateLink(request.kind === 'view' ? 'view' : 'edit');
 			case 'diagnostics':
 			{
 				const report = await folder.diagnostics();
@@ -102,5 +119,8 @@ export async function sharedFolderScript(baseDirectory)
 		(await fs.readFile(path.join(baseDirectory, '../renderer/preferences.js'), 'utf8')) + '\n' +
 		(await fs.readFile(path.join(baseDirectory, '../shared/journal-core.cjs'), 'utf8')) + '\n' +
 		(await fs.readFile(path.join(baseDirectory, '../shared/conflicts.cjs'), 'utf8')) + '\n' +
-		(await fs.readFile(path.join(baseDirectory, '../renderer/shared-folder.js'), 'utf8'));
+		(await fs.readFile(path.join(baseDirectory, '../shared/version-history.cjs'), 'utf8')) + '\n' +
+		(await fs.readFile(path.join(baseDirectory, '../shared/change-log.cjs'), 'utf8')) + '\n' +
+		(await fs.readFile(path.join(baseDirectory, '../renderer/shared-folder.js'), 'utf8')) + '\n' +
+		(await fs.readFile(path.join(baseDirectory, '../renderer/collaboration-panels.js'), 'utf8'));
 }

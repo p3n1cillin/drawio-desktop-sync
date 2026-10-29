@@ -19,6 +19,7 @@ import FileWatcher from './file-watcher.js';
 import { ConfigPathGrants } from './config-paths.js';
 import { getUrlParams, getUrlParamsFiles } from './url-params.js';
 import { registerSharedFolder, sharedFolderScript } from './shared-folder-ipc.js';
+import { systemIdentity } from './identity.js';
 import {ServerMaps, parseInvite} from './server-folder.js';
 import {prepareServerArguments, sharedMapShortcutArguments} from './server-launch.js';
 import {EditorPreferences, registerEditorPreferences} from './editor-preferences.js';
@@ -915,7 +916,12 @@ app.whenReady().then(async () =>
 	
     let argv;
 	try { argv = await prepareServerArguments([...process.argv], serverMaps); }
-	catch (error) { log.error('Shared-map launch failed:', error); dialog.showErrorBox('Cannot open shared map', error.message); app.quit(); return; }
+	catch (error)
+	{
+		log.error('Shared-map launch failed:', error);
+		if (!await offerSharedMapJoin(error)) { app.quit(); return; }
+		argv = process.argv.filter(arg => !String(arg).startsWith('--shared-map='));
+	}
 
     // https://github.com/electron/electron/issues/4690#issuecomment-217435222
     if (process.defaultApp != true)
@@ -1589,7 +1595,12 @@ app.whenReady().then(async () =>
 			// Creating a new window while a save/open dialog is open crashes the app
 			if (dialogOpen) return;
 			try { commandLine = await prepareServerArguments(commandLine, serverMaps); }
-			catch (error) { log.error('Shared-map launch failed:', error); dialog.showErrorBox('Cannot open shared map', error.message); return; }
+			catch (error)
+			{
+				log.error('Shared-map launch failed:', error);
+				if (!await offerSharedMapJoin(error)) return;
+				commandLine = commandLine.filter(arg => !String(arg).startsWith('--shared-map='));
+			}
 
     		//Create another window
     		let win = createWindow()
@@ -4495,10 +4506,29 @@ ipcMain.on('app-load-finished', (e) =>
 	if (!validateSender(e.senderFrame)) return null;
 
 	configPathGrants.collect(e.sender);
+	const join = joinOnLoad > 0 && joinOnLoad--;
 	sharedFolderScript(__dirname).then(script =>
-		e.sender.isDestroyed() ? null : e.sender.executeJavaScript(script))
+		e.sender.isDestroyed() ? null : e.sender.executeJavaScript(script + (join ? '\nDraw.loadPlugin(ui => ui.sharedFolder.joinDialog());' : '')))
 		.catch(err => log.error('Shared folder initialization:', err.message));
 });
+
+// A shortcut whose map this PC has not joined (or whose saved connection is
+// gone) opens the editor at the join dialog instead of failing.
+let joinOnLoad = 0;
+async function offerSharedMapJoin(error)
+{
+	if (error.cause?.code !== 'ENOENT')
+	{
+		dialog.showErrorBox('Cannot open shared map', error.message);
+		return false;
+	}
+	const {response} = await dialog.showMessageBox({type: 'info', title: 'Open shared map', buttons: ['Paste link…', 'Cancel'], defaultId: 0, cancelId: 1,
+		message: 'This PC has not joined this shared map yet',
+		detail: 'Paste the shared-map link that was sent to you. After joining, this shortcut opens the map directly.'});
+	if (response !== 0) return false;
+	joinOnLoad++;
+	return true;
+}
 
 let sharedFolderClientId = store?.get('sharedFolderClientId');
 if (typeof sharedFolderClientId !== 'string' || !/^[a-f0-9-]{36}$/.test(sharedFolderClientId))
@@ -4525,7 +4555,7 @@ function createServerShortcut(folder)
 	return shortcut;
 }
 registerSharedFolder({ipcMain, validateSender, assertWritablePath, clipboard, shell, clientId: sharedFolderClientId,
-	clientBuild: app.getVersion(),
+	clientBuild: app.getVersion(), identity: () => systemIdentity(),
 	serverMaps, blessServerMap: blessPath, createShortcut: createServerShortcut, confirmServer: async request =>
 	{
 		const endpoint = request.action === 'rotateLink' ? request.server : request.action === 'serverJoin' ? parseInvite(request.invite).server :

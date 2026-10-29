@@ -5,6 +5,7 @@ Draw.loadPlugin(function(ui)
 	if (ui.sharedFolder) return;
 	const core = window.ShareMapJournal;
 	const conflictCore = window.ShareMapConflicts;
+	const versionCore = window.ShareMapVersions;
 	const graph = ui.editor.graph;
 	let session = null;
 	let probing = null;
@@ -22,12 +23,65 @@ Draw.loadPlugin(function(ui)
 	bar.appendChild(people);
 	let highlights = [];
 	let labels = [];
+	const pointers = new Map();
+	let pointer = null;
+	// Comments, Show Changes and other panels follow the session through these events.
+	const listeners = new Set();
+	function emit(type, s)
+	{
+		for (const listener of listeners)
+		{
+			try { listener(type, s); }
+			catch (error) { console.error('Shared map listener failed', error); }
+		}
+	}
+	function displayName(s)
+	{
+		return localStorage.getItem('.sharemapName') || s.name || '';
+	}
+	function colorOf(peer)
+	{
+		return ['#2b78d0', '#9854c6', '#bb6332', '#16836a', '#c23985', '#567c26', '#a35e1b', '#5369be'][parseInt((peer.client || peer.author).replace(/-/g, '').slice(0, 4), 16) % 8];
+	}
+	// Pointers move on their own layer so presence boxes are not rebuilt for every mouse move.
+	function showPointers(peers, s)
+	{
+		const seen = new Set();
+		const view = graph.view;
+		if (graph.container && view && ui.currentPage)
+		{
+			for (const peer of peers)
+			{
+				const isYou = peer.author === s.author || (peer.client && peer.client === s.client);
+				if (isYou || !peer.pointer || peer.page !== ui.currentPage.getId() || Date.now() - peer.updated > 15000) continue;
+				seen.add(peer.author);
+				let node = pointers.get(peer.author);
+				if (!node)
+				{
+					node = document.createElement('div');
+					node.className = 'geSyncPointer';
+					node.style.cssText = 'position:absolute;left:0;top:0;z-index:3;pointer-events:none;transition:transform 120ms linear;will-change:transform';
+					const color = colorOf(peer);
+					node.innerHTML = '<svg width="16" height="20" viewBox="0 0 16 20" style="display:block"><path d="M1 1 L1 16 L5 12 L8 19 L11 18 L8 11 L14 11 Z" fill="' + color + '" stroke="#fff" stroke-width="1.2"/></svg>';
+					const tag = document.createElement('div');
+					tag.style.cssText = 'margin:-4px 0 0 12px;padding:1px 5px;border-radius:3px;color:#fff;font:11px Arial;white-space:nowrap;background:' + color;
+					node.appendChild(tag);
+					graph.container.appendChild(node);
+					pointers.set(peer.author, node);
+				}
+				node.lastChild.textContent = peer.name;
+				node.style.transform = 'translate(' + Math.round((peer.pointer.x + view.translate.x) * view.scale) + 'px,' + Math.round((peer.pointer.y + view.translate.y) * view.scale) + 'px)';
+			}
+		}
+		for (const [author, node] of pointers) if (!seen.has(author)) { node.remove(); pointers.delete(author); }
+	}
 	const editingNote = document.createElement('span');
 	editingNote.className = 'geSyncEditingNote';
 	editingNote.style.cssText = 'max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#d89035';
 	bar.appendChild(editingNote);
 	function showPeople(peers, s)
 	{
+		showPointers(peers, s);
 		const key = JSON.stringify([s.modelRevision, ui.currentPage?.getId(), graph.view?.scale, graph.view?.translate,
 			graph.getSelectionCells().map(cell => cell.id), peers.map(peer => [peer.author, peer.name, peer.page, peer.selection, peer.editing, peer.editingCell])]);
 		if (s.peopleKey === key) return;
@@ -41,11 +95,13 @@ Draw.loadPlugin(function(ui)
 		for (const peer of peers.slice(0, 6))
 		{
 			const isYou = peer.author === s.author || (peer.client && peer.client === s.client);
-			const color = ['#2b78d0', '#9854c6', '#bb6332', '#16836a', '#c23985', '#567c26', '#a35e1b', '#5369be'][parseInt((peer.client || peer.author).replace(/-/g, '').slice(0, 4), 16) % 8];
+			const color = colorOf(peer);
 			const avatar = document.createElement('span');
 			avatar.className = 'geSyncAvatar';
-			avatar.textContent = peer.name.slice(0, 2).toUpperCase();
-			avatar.title = peer.name + (isYou ? ' (you)' : peer.editing ? ' · editing an object' : peer.selection.length ? ' · selecting an object' : ' · viewing this map');
+			const words = peer.name.trim().split(/\s+/);
+			avatar.textContent = (words.length > 1 ? words[0][0] + words.at(-1)[0] : peer.name.slice(0, 2)).toUpperCase();
+			avatar.title = peer.name + (peer.email ? ' <' + peer.email + '>' : '') + (isYou ? ' (you)' : peer.role === 'view' ? ' · viewing (view only)' :
+				peer.editing ? ' · editing an object' : peer.selection.length ? ' · selecting an object' : ' · viewing this map');
 			if (!isYou)
 			{
 				avatar.style.cursor = 'pointer';
@@ -118,15 +174,21 @@ Draw.loadPlugin(function(ui)
 		const selection = graph.getSelectionCells().map(cell => cell.id);
 		const editing = graph.isEditing() || !!graph.mouseDown;
 		const cell = graph.cellEditor?.editingCell;
-		const state = {page: ui.currentPage?.getId(), selection, editing, editingCell: cell?.id || (graph.mouseDown ? selection[0] : '') || ''};
+		const state = {page: ui.currentPage?.getId(), selection, editing, editingCell: cell?.id || (graph.mouseDown ? selection[0] : '') || '', pointer};
 		const signature = JSON.stringify(state);
 		const elapsed = Date.now() - (s.lastActivity || 0);
-		if (elapsed < 250 || (signature === s.activitySignature && elapsed < 10000)) return;
+		if (signature === s.activitySignature && elapsed < 10000) return;
+		if (elapsed < 250)
+		{
+			// Sends the latest state once the throttle window ends instead of dropping it.
+			if (!s.activityTimer) s.activityTimer = setTimeout(() => { s.activityTimer = null; updateActivity(s); }, 250 - elapsed);
+			return;
+		}
 		s.lastActivity = Date.now();
 		s.activityTask = true;
 		try
 		{
-			const peers = await call('activity', {...state, name: localStorage.getItem('.sharemapName') || s.name}, s);
+			const peers = await call('activity', {...state, name: displayName(s)}, s);
 			if (active(s)) { s.activitySignature = signature; s.presenceError = null; updatePeople(s, peers); }
 		}
 		catch (error) { s.presenceError = error; }
@@ -232,6 +294,7 @@ Draw.loadPlugin(function(ui)
 	}
 	function dirty(s)
 	{
+		if (s.role === 'view') return false;
 		if (!s.pendingPublish && s.file.isModified && !s.file.isModified()) return false;
 		return !mxUtils.isEmptyObject(capture(s).patch);
 	}
@@ -242,24 +305,31 @@ Draw.loadPlugin(function(ui)
 	function savedStatus(s, pending)
 	{
 		const peers = s.remotePeers || 0;
-		status.textContent = pending ? 'Downloading changes…' : s.paused ? 'AutoSave off' :
-			'Saved to server · ' + (peers ? (peers + 1) + ' editors seen' : 'Connected');
+		const others = peers ? ' · ' + (peers + 1) + ' people here' : '';
+		status.textContent = pending ? 'Downloading changes…' : s.role === 'view' ? 'View only · Up to date' + others :
+			s.paused ? 'AutoSave off' : 'Saved to server' + (others || ' · Connected');
 	}
 	async function publish(s)
 	{
-		if (!active(s)) return;
+		if (!active(s) || s.role === 'view') return;
 		if (!s.pendingPublish && s.file.isModified && !s.file.isModified()) return;
 		const change = s.pendingPublish || capture(s);
 		if (!mxUtils.isEmptyObject(change.patch))
 		{
 			s.pendingPublish = change;
-			if (s.transport === 'server' && !change.operationId) change.operationId = window.crypto.randomUUID();
-			status.textContent = s.transport === 'server' ? 'Saving to server…' : 'Saving edits locally…';
+			change.operationId = change.operationId || window.crypto.randomUUID();
+			status.textContent = 'Saving to server…';
 			const op = await call('append', {patch: change.patch, parents: s.heads,
-				operationId: change.operationId, name: localStorage.getItem('.sharemapName') || s.name || ''}, s);
-			s.records.set(op.id, op);
-			collectConflicts(s, op);
-			s.ordered = core.order([...s.records.values()], s.manifest.room);
+				operationId: change.operationId, name: displayName(s)}, s);
+			const wasCurrent = upToDate(s, s.ordered);
+			addRecords(s, [op]);
+			// The published pages are exactly the journal state when this edit
+			// lands last, so nothing needs to be replayed.
+			if (wasCurrent && s.ordered.ready.at(-1)?.id === op.id)
+			{
+				s.applied.push(op.id);
+				s.confirmed = {pages: change.pages, vars: change.vars};
+			}
 			s.heads = s.ordered.heads;
 			s.baseline = change.pages;
 			s.vars = change.vars;
@@ -267,14 +337,37 @@ Draw.loadPlugin(function(ui)
 			s.needsSnapshot = true;
 		}
 	}
+	function addRecords(s, incoming)
+	{
+		const added = incoming.filter(op => !s.records.has(op.id));
+		for (const op of added) { s.records.set(op.id, op); collectConflicts(s, op); }
+		if (added.length || !s.ordered) s.ordered = (s.ordered && core.extend(s.ordered, added, s.manifest.room)) || core.order([...s.records.values()], s.manifest.room);
+		return added.length > 0;
+	}
+	// Refreshed after every 25 new edits; idle cycles never serialize the map.
+	function saveLaunchState(s)
+	{
+		const count = s.applied.length;
+		if (count - (s.launchCount || 0) < 25 || s.savingLaunch || !s.confirmed) return;
+		s.savingLaunch = true;
+		const node = ui.getNodeForPages(s.confirmed.pages);
+		if (s.confirmed.vars != null) node.setAttribute('vars', s.confirmed.vars);
+		call('saveLaunchState', {count, last: s.applied[count - 1], xml: mxUtils.getXml(node)}, s)
+			.then(() => { s.launchCount = count; }, () => {}).finally(() => { s.savingLaunch = false; });
+	}
+	function upToDate(s, ordered)
+	{
+		return !!ordered && s.applied.length === ordered.ready.length && s.applied.at(-1) === ordered.ready.at(-1)?.id;
+	}
+	// Replays only edits after the last applied one from a kept copy of that
+	// state; the whole journal is replayed from the base only when history changed.
 	function materialize(s, ordered)
 	{
-		const previous = s.applied || [];
-		const tail = ordered.ready.slice(previous.length);
-		const incremental = previous.length && previous.every((id, index) => ordered.ready[index]?.id === id) && !tail.some(op => op.author === s.author);
-		let merged = incremental ? ui.clonePages(s.baseline) : ui.getPagesForXml(s.manifest.base);
-		let mergedVars = incremental ? s.vars : mxUtils.parseXml(s.manifest.base).documentElement.getAttribute('vars');
-		for (const op of incremental ? tail : ordered.ready)
+		const count = s.applied.length;
+		const incremental = s.confirmed && count <= ordered.ready.length && ordered.ready[0]?.id === s.applied[0] && ordered.ready[count - 1]?.id === s.applied[count - 1];
+		let merged = incremental ? ui.clonePages(s.confirmed.pages) : ui.getPagesForXml(s.manifest.base);
+		let mergedVars = incremental ? s.confirmed.vars : mxUtils.parseXml(s.manifest.base).documentElement.getAttribute('vars');
+		for (const op of incremental ? ordered.ready.slice(count) : ordered.ready)
 		{
 			merged = ui.patchPages(merged, op.patch, false, null, true, true, true);
 			if (op.patch.f && Object.prototype.hasOwnProperty.call(op.patch.f, 'vars'))
@@ -282,7 +375,11 @@ Draw.loadPlugin(function(ui)
 				mergedVars = op.patch.f.vars;
 			}
 		}
-		return {pages: merged, vars: mergedVars};
+		s.confirmed = {pages: merged, vars: mergedVars};
+		s.applied = ordered.ready.map(op => op.id);
+		s.contributors = new Set(ordered.ready.map(op => op.author));
+		// Read-only: patching starts from a clone of the confirmed pages.
+		return s.confirmed;
 	}
 	async function cycle(s)
 	{
@@ -299,22 +396,16 @@ Draw.loadPlugin(function(ui)
 				await publish(s);
 				if (!active(s)) return;
 				const response = await call('scan', {}, s);
-				const incoming = Array.isArray(response) ? response : response.records;
 				if (session !== s || ui.getCurrentFile() !== s.file) return;
-				let changed = false;
-				for (const op of incoming)
-				{
-					if (!s.records.has(op.id)) { changed = true; s.records.set(op.id, op); collectConflicts(s, op); }
-				}
-				if (changed) s.ordered = core.order([...s.records.values()], s.manifest.room);
+				addRecords(s, response.records);
+				s.remoteChanged = false;
 				if (active(s) && response.peers) updatePeople(s, response.peers);
 				if (graph.isEditing() || graph.mouseDown) return;
 				// Edits may have happened while disk IO was in flight.
 				await publish(s);
 				if (session !== s || ui.getCurrentFile() !== s.file || graph.isEditing() || graph.mouseDown || dirty(s)) return;
-				const ordered = s.ordered || core.order([...s.records.values()], s.manifest.room);
-				const signature = ordered.ready.map(op => op.id).join(',');
-				if (signature !== s.signature)
+				const ordered = s.ordered;
+				if (!upToDate(s, ordered))
 				{
 					const merged = materialize(s, ordered);
 					const patch = delta(s.baseline, merged.pages, s.vars, merged.vars);
@@ -322,41 +413,38 @@ Draw.loadPlugin(function(ui)
 					s.baseline = pages();
 					s.vars = vars();
 					s.heads = ordered.heads;
-					s.signature = signature;
-					s.applied = ordered.ready.map(op => op.id);
 					s.needsSnapshot = true;
+					emit('records', s);
 				}
+				const appliedKey = s.applied.length + ':' + s.applied.at(-1);
 				// Persist a conventional .drawio view for exports and readers. Its
 				// embedded heads prevent reopening an incomplete materialized view.
 				let xml = s.snapshot;
-				if (s.needsSnapshot)
+				// Viewers never write the materialized view.
+				if (s.needsSnapshot && s.role !== 'view')
 				{
-				const root = ui.getNodeForPages(s.baseline);
-				root.setAttribute('sharemap-room', s.manifest.room);
-				root.setAttribute('sharemap-heads', JSON.stringify(s.heads));
-				xml = mxUtils.getXml(root);
-				if (s.snapshot !== xml)
-				{
-					if (await call('snapshot', {xml, heads: s.heads}, s)) s.snapshot = xml;
-				}
-				if (s.snapshot === xml) s.needsSnapshot = false;
+					const root = ui.getNodeForPages(s.baseline);
+					root.setAttribute('sharemap-room', s.manifest.room);
+					root.setAttribute('sharemap-heads', JSON.stringify(s.heads));
+					xml = mxUtils.getXml(root);
+					if (s.snapshot !== xml && await call('snapshot', {xml, heads: s.heads}, s)) s.snapshot = xml;
+					if (s.snapshot === xml) s.needsSnapshot = false;
 				}
 				if (!active(s)) return;
-				if (!dirty(s) && (s.file.isModified?.() || s.savedSignature !== signature || s.savedXml !== xml))
+				if (!dirty(s) && (s.file.isModified?.() || s.savedKey !== appliedKey || s.savedXml !== xml))
 				{
 					s.file.setModified(false);
 					s.file.setShadowPages(ui.clonePages(s.baseline), s.vars);
-					s.file.setData(xml);
+					if (xml) s.file.setData(xml);
 					ui.descriptorChanged();
 					ui.editor.setStatus('');
-					s.savedSignature = signature;
+					s.savedKey = appliedKey;
 					s.savedXml = xml;
 				}
-				const contributors = new Set(ordered.ready.map(op => op.author));
-				contributors.add(s.author);
+				saveLaunchState(s);
 				savedStatus(s, ordered.pending);
-				status.title = ordered.ready.length + ' saved edits · ' + contributors.size + ' contributors. ' +
-					('Connected directly to ' + s.server + '. ') +
+				status.title = ordered.ready.length + ' saved edits · ' + new Set([...(s.contributors || []), s.author]).size + ' contributors. ' +
+					'Connected directly to ' + s.server + '. ' +
 					'Same-property edits use deterministic last-writer order; all edits remain in the journal.';
 				s.error = null;
 				s.failures = 0;
@@ -382,18 +470,24 @@ Draw.loadPlugin(function(ui)
 		s.initializing = (async () =>
 		{
 		const response = await call('scan', {}, s);
-		const records = Array.isArray(response) ? response : response.records;
 		if (session !== s || ui.getCurrentFile() !== s.file) return;
-		for (const op of records) { s.records.set(op.id, op); collectConflicts(s, op); }
-		const ordered = core.order(records, s.manifest.room);
-		s.ordered = ordered;
+		addRecords(s, response.records);
+		const ordered = s.ordered;
 		const required = JSON.parse(ui.fileNode.getAttribute('sharemap-heads') || '[]');
 		const savedRoom = ui.fileNode.getAttribute('sharemap-room');
-		if (savedRoom && savedRoom !== s.manifest.room) throw new Error('The map and collaboration folder belong to different shared sessions. Restore the matching folder.');
+		if (savedRoom && savedRoom !== s.manifest.room) throw new Error('This copy belongs to a different shared map. Reopen the map from its shared-map link.');
 		const available = new Set(ordered.ready.map(op => op.id));
 		if (!Array.isArray(required) || !required.every(id => available.has(id)) || ordered.pending)
 		{
 			throw new Error('Waiting for earlier server edits. Reconnect and retry.');
+		}
+		const cached = await call('launchState', {}, s).catch(() => null);
+		if (session !== s || ui.getCurrentFile() !== s.file) return;
+		if (cached?.count <= ordered.ready.length && ordered.ready[cached.count - 1]?.id === cached.last)
+		{
+			s.confirmed = {pages: ui.getPagesForXml(cached.xml), vars: mxUtils.parseXml(cached.xml).documentElement.getAttribute('vars')};
+			s.applied = ordered.ready.slice(0, cached.count).map(op => op.id);
+			s.launchCount = cached.count;
 		}
 		const merged = materialize(s, ordered);
 		ui.fileNode.removeAttribute('sharemap-room');
@@ -404,18 +498,19 @@ Draw.loadPlugin(function(ui)
 		s.baseline = pages();
 		s.vars = vars();
 		s.heads = ordered.heads;
-		s.signature = ordered.ready.map(op => op.id).join(',');
-		s.applied = ordered.ready.map(op => op.id);
 		s.needsSnapshot = true;
 		s.initialized = true;
 		s.paused = localStorage.getItem(autoSaveKey(s)) === 'off';
-		autoSave.style.display = 'inline-block';
+		autoSave.style.display = s.role === 'view' ? 'none' : 'inline-block';
 		autoSave.disabled = false;
 		autoSave.textContent = 'AutoSave  ' + (s.paused ? 'Off' : 'On');
 		autoSave.setAttribute('aria-pressed', String(!s.paused));
 		s.file.setModified(false);
-		ui.setGraphEnabled(s.file.isEditable());
+		ui.setGraphEnabled(s.file.isEditable() && s.role !== 'view');
+		ui.updateActionStates?.();
+		emit('session', s);
 		await cycle(s);
+		watch(s);
 		})();
 		try { await s.initializing; }
 		finally { s.initializing = null; }
@@ -432,6 +527,107 @@ Draw.loadPlugin(function(ui)
 			check();
 		}
 		if (s.error || !s.initialized || dirty(s)) throw s.error || new Error('Edits are still being saved. Retry.');
+	}
+	async function versions(s)
+	{
+		graph.stopEditing();
+		await cycle(s);
+		if (!active(s)) throw new Error('The document changed. Reopen Version History.');
+		if (s.error) throw s.error;
+		let history = {};
+		let historyError = null;
+		try { history = await call('history', {}, s); }
+		catch (error) { historyError = error; }
+		const ready = (s.ordered || core.order([...s.records.values()], s.manifest.room)).ready;
+		const groups = versionCore.group(ready, history.times, history.created);
+		if (!groups.length) throw historyError && !/Endpoint not found/.test(historyError.message) ? historyError :
+			new Error('Version history needs the updated collaboration server. Ask its administrator to update it.');
+		// Replays forward from the last opened version; opening an older one starts again from the base.
+		let replay = null;
+		const xmlAt = index =>
+		{
+			if (index === s.applied.length - 1 && s.confirmed && s.applied[index] === ready[index]?.id) replay = {index, pages: ui.clonePages(s.confirmed.pages), vars: s.confirmed.vars};
+			else if (!replay || index < replay.index) replay = {index: -1, pages: ui.getPagesForXml(s.manifest.base),
+				vars: mxUtils.parseXml(s.manifest.base).documentElement.getAttribute('vars')};
+			for (let next = replay.index + 1; next <= index; next++)
+			{
+				const patch = ready[next].patch;
+				replay.pages = ui.patchPages(replay.pages, patch, false, null, true, true, true);
+				if (patch.f && Object.prototype.hasOwnProperty.call(patch.f, 'vars')) replay.vars = patch.f.vars;
+			}
+			replay.index = index;
+			const node = ui.getNodeForPages(replay.pages);
+			if (replay.vars != null) node.setAttribute('vars', replay.vars);
+			return mxUtils.getXml(node);
+		};
+		const revs = groups.map(version => ({id: String(version.index), modifiedDate: version.end, edits: version.edits,
+			lastModifyingUserName: version.edits ? version.names.join(', ') : 'Shared map created',
+			getXml: (success, error) => { try { success(xmlAt(version.index)); } catch (e) { error(e); } }}));
+		revs.shareMap = true;
+		return revs;
+	}
+	// A restore is published as a new edit, so every earlier version stays available.
+	async function restoreVersion(s, xml)
+	{
+		graph.stopEditing();
+		await cycle(s);
+		if (!active(s) || s.error) throw s.error || new Error('The document changed while restoring. Retry.');
+		const patch = delta(pages(), ui.getPagesForXml(xml), vars(), mxUtils.parseXml(xml).documentElement.getAttribute('vars'));
+		if (!mxUtils.isEmptyObject(patch))
+		{
+			s.file.patch([patch], null, false, false, true);
+			s.file.setModified(true);
+			await cycle(s);
+			if (s.error) throw s.error;
+		}
+		if (active(s)) status.textContent = 'Version restored · Saved to server';
+	}
+	// Push updates: the server holds this request until edits, comments or
+	// presence change. Older servers without it keep the one-second poll.
+	async function watch(s)
+	{
+		if (s.watching || s.watchUnsupported) return;
+		s.watching = true;
+		try
+		{
+			while (session === s && s.initialized)
+			{
+				try
+				{
+					const state = await call('watch', {cursor: s.watchCursor, epoch: s.watchEpoch, comments: s.commentVersion, presence: s.presenceVersion}, s);
+					if (session !== s) return;
+					s.watchHealthy = true;
+					s.presenceVersion = state.presence;
+					if (state.peers && active(s)) updatePeople(s, state.peers);
+					if (state.comments !== s.commentVersion) { s.commentVersion = state.comments; emit('comments', s); }
+					if (state.cursor !== s.watchCursor || state.epoch !== s.watchEpoch)
+					{
+						s.watchCursor = state.cursor;
+						s.watchEpoch = state.epoch;
+						s.remoteChanged = true;
+						if (!s.paused && Date.now() >= (s.retryAt || 0)) cycle(s);
+					}
+				}
+				catch (error)
+				{
+					s.watchHealthy = false;
+					if (/Endpoint not found|Unknown collaboration action/.test(error.message)) { s.watchUnsupported = true; return; }
+					await new Promise(resolve => setTimeout(resolve, 2000));
+				}
+			}
+		}
+		finally { s.watching = false; }
+	}
+	function endSession(text)
+	{
+		const s = session;
+		session = null;
+		reviewButton.style.display = 'none';
+		showPeople([], {});
+		autoSave.style.display = 'none';
+		status.textContent = text;
+		ui.updateActionStates?.();
+		if (s) emit('closed', s);
 	}
 	async function open()
 	{
@@ -456,11 +652,7 @@ Draw.loadPlugin(function(ui)
 			if (session && (session.file !== file || !file.isEditable()))
 			{
 				await call('close', {}, session);
-				session = null;
-				reviewButton.style.display = 'none';
-				showPeople([], {});
-				autoSave.style.display = 'none';
-				status.textContent = 'Open a shared map to collaborate';
+				endSession('Open a shared map to collaborate');
 			}
 			return;
 		}
@@ -481,13 +673,11 @@ Draw.loadPlugin(function(ui)
 					return;
 				}
 				if (session) await call('close', {}, session);
-				session = null;
-				reviewButton.style.display = 'none';
-				showPeople([], {});
+				endSession('Connecting to server…');
 				if (info)
 				{
 					if (info.mapName) { file.fileObject.name = info.mapName; file.title = info.mapName; ui.descriptorChanged(); }
-					session = Object.assign(info, {file, path: file.fileObject.path, records: new Map(), heads: [], initialized: false});
+					session = Object.assign(info, {file, path: file.fileObject.path, records: new Map(), heads: [], applied: [], initialized: false});
 					await initialize(session);
 				}
 				else
@@ -527,7 +717,7 @@ Draw.loadPlugin(function(ui)
 		title.textContent = 'Sync diagnostics';
 		div.appendChild(title);
 		const note = document.createElement('p');
-		note.textContent = 'Compare Room, transport and edit fingerprint on both PCs. Different fingerprints mean edit records have not reached both copies. No diagram content is included.';
+		note.textContent = 'Compare the room and edit fingerprint on both PCs. Different fingerprints mean some edits have not reached both PCs. No diagram content is included.';
 		div.appendChild(note);
 		const text = document.createElement('textarea');
 		text.readOnly = true;
@@ -573,9 +763,10 @@ Draw.loadPlugin(function(ui)
 	{
 		const div = document.createElement('div');
 		div.style.cssText = 'padding:20px;font:14px Arial';
-		const label = document.createElement('label'); label.textContent = 'Your display name'; div.appendChild(label);
+		const label = document.createElement('label'); label.textContent = 'Your display name (leave blank to use your account name)'; div.appendChild(label);
 		const input = document.createElement('input');
-		input.value = localStorage.getItem('.sharemapName') || session?.name || '';
+		input.value = localStorage.getItem('.sharemapName') || '';
+		input.placeholder = session?.name || '';
 		input.maxLength = 80;
 		input.style.cssText = 'display:block;width:100%;box-sizing:border-box;padding:8px;margin:10px 0';
 		label.appendChild(input);
@@ -598,21 +789,71 @@ Draw.loadPlugin(function(ui)
 		}
 		finally { if (ui.getCurrentFile() === file) ui.setGraphEnabled(file.isEditable()); }
 	}
+	function element(tag, text, css, parent)
+	{
+		const node = document.createElement(tag);
+		if (text) node.textContent = text;
+		if (css) node.style.cssText = css;
+		if (parent) parent.appendChild(node);
+		return node;
+	}
+	// Office-style sharing: one link per permission, people with access, and owner controls.
 	function serverAccess()
 	{
 		const s = session;
-		const div = document.createElement('div');
-		div.style.cssText = 'padding:20px;font:14px Arial;line-height:1.5';
-		const title = document.createElement('h2');
-		title.textContent = 'Share map';
-		div.appendChild(title);
-		const note = document.createElement('p');
-		note.textContent = 'People with the link can edit this map while connected to your network or VPN. They install drawio-desktop-sync and use … → Open shared map. Keep the link within your team.';
-		div.appendChild(note);
-		button('Copy shared-map link', async () => { await call('copyLink', {}, s); status.textContent = 'Shared-map link copied'; ui.hideDialog(); }, div);
-		if (s.owner) button('Revoke existing links', async () => { await call('rotateLink', {}, s); ui.hideDialog(); status.textContent = 'Links revoked'; }, div);
-		button('Close', () => ui.hideDialog(), div);
-		ui.showDialog(div, 540, 260, true, true);
+		const div = element('div', '', 'padding:20px;font:14px Arial;line-height:1.5');
+		element('h2', 'Share "' + (s.mapName || 'map') + '"', 'margin-top:0', div);
+		const row = element('div', '', 'display:flex;gap:8px;align-items:center', div);
+		const kind = element('select', '', 'flex:1;padding:6px', row);
+		for (const [value, text] of [['edit', 'People with the link can edit'], ['view', 'People with the link can view']])
+		{
+			if (value === 'edit' && s.role === 'view') continue;
+			const option = element('option', text, '', kind);
+			option.value = value;
+		}
+		const copy = button('Copy link', async () =>
+		{
+			await call('copyLink', {kind: kind.value}, s);
+			status.textContent = (kind.value === 'view' ? 'View' : 'Edit') + ' link copied';
+			ui.hideDialog();
+		}, row);
+		copy.className = 'geBtn gePrimaryBtn';
+		element('p', 'Anyone with the link who can reach ' + new URL(s.server).host + ' can open it in drawio-desktop-sync (… → Open shared map). ' +
+			'View links open the map read-only. Treat links like keys and share them only with people who should have access.', 'font-size:12px;opacity:.8', div);
+		const people = element('div', '', 'max-height:140px;overflow:auto;border-top:1px solid #8884;padding-top:6px', div);
+		element('div', 'People with access', 'font-weight:600', people);
+		const list = element('div', 'Loading…', 'font-size:12px', people);
+		call('people', {}, s).then(known =>
+		{
+			const here = new Set((s.lastPeers || []).map(peer => peer.email).filter(Boolean));
+			list.textContent = known.length ? '' : 'Nobody with a work or school account has opened this map yet.';
+			for (const person of known) element('div', person.name + ' <' + person.email + '>' + (here.has(person.email) ? ' · here now' : ''), '', list);
+		}).catch(() => { list.textContent = 'Update the collaboration server to list people.'; });
+		if (s.owner)
+		{
+			element('div', 'Stop sharing', 'font-weight:600;margin-top:10px', div);
+			element('div', 'Disconnects everyone using the current link. Send a new link to people who should keep access.', 'font-size:12px;opacity:.8', div);
+			const controls = element('div', '', 'display:flex;gap:8px;margin-top:4px', div);
+			for (const [value, text] of [['edit', 'Stop edit links'], ['view', 'Stop view links']])
+			{
+				button(text, async () => { await call('rotateLink', {kind: value}, s); ui.hideDialog(); status.textContent = (value === 'view' ? 'View' : 'Edit') + ' links stopped'; }, controls);
+			}
+		}
+		const close = element('div', '', 'display:flex;justify-content:flex-end;margin-top:12px', div);
+		button('Close', () => ui.hideDialog(), close);
+		ui.showDialog(div, 560, s.owner ? 430 : 350, true, true);
+	}
+	// The … menu lists actions in order; panels add their own before the settings items.
+	const menuItems = [
+		{label: 'Open shared map', action: () => serverJoinDialog()},
+		{label: 'Share current map on server', action: () => serverCreate(), when: () => !session},
+		{label: 'Version history', action: () => ui.actions.get('revisionHistory').funct(), when: () => session?.initialized},
+		{label: 'Your display name', action: () => nameDialog(), settings: true},
+		{label: 'Create desktop shortcut', action: () => call('shortcut'), when: () => session, settings: true},
+		{label: 'Sync diagnostics', action: () => diagnostics(), when: () => session, settings: true}];
+	function addMenuItem(label, action, when)
+	{
+		menuItems.splice(menuItems.findIndex(item => item.settings), 0, {label, action, when});
 	}
 
 	function autoSaveKey(s) { return '.sharemapAutoSave.' + s.manifest.room + '.' + s.client; }
@@ -641,28 +882,24 @@ Draw.loadPlugin(function(ui)
 	autoSave.style.cssText += ';border:1px solid #8886;border-radius:14px;padding:5px 10px;white-space:nowrap';
 	autoSave.title = 'Automatically save your edits and merge changes from the server';
 	bar.insertBefore(autoSave, status);
-	const share = button('Share', async () => { if (session) serverAccess(); else await serverCreate(); });
+	const share = button('Share', async () => { if (session?.initialized) serverAccess(); else await serverCreate(); });
 	share.style.cssText += ';background:#107c41;color:#fff;border:0;border-radius:5px;padding:6px 18px;font-weight:600';
 	share.title = 'Share this map';
+	function addBarButton(label, action, title)
+	{
+		const result = button(label, action);
+		bar.insertBefore(result, share);
+		result.title = title || label;
+		result.style.cssText += ';display:none;border:1px solid #8886;border-radius:5px;padding:5px 10px;white-space:nowrap';
+		return result;
+	}
 	button('⋯', () =>
 	{
-		const div = document.createElement('div');
-		div.style.cssText = 'padding:20px;display:flex;flex-direction:column;gap:12px';
-		button('Open shared map', () => { ui.hideDialog(); serverJoinDialog(); }, div);
-		button('Your display name', () => { ui.hideDialog(); nameDialog(); }, div);
-		button('Share current map on server', () => { ui.hideDialog(); return serverCreate(); }, div);
-		button('Copy link for people with access', async () =>
-		{
-			if (!session) throw new Error('Open a shared map first.');
-			await call('copyLink');
-			ui.hideDialog();
-			status.textContent = 'Link copied';
-		}, div);
-		button('Manage access', () => { if (!session) throw new Error('Open a shared map first.'); ui.hideDialog(); serverAccess(); }, div);
-		button('Create desktop shortcut', async () => { await call('shortcut'); ui.hideDialog(); }, div);
-		button('Sync diagnostics', () => { ui.hideDialog(); return diagnostics(); }, div);
-		ui.showDialog(div, 310, 340, true, true);
-	});
+		const div = element('div', '', 'padding:20px;display:flex;flex-direction:column;gap:12px');
+		const items = menuItems.filter(item => !item.when || item.when());
+		for (const item of items) button(item.label, () => { ui.hideDialog(); return item.action(); }, div);
+		ui.showDialog(div, 310, 40 + items.length * 42, true, true);
+	}).title = 'More sharing options';
 	status.style.cursor = 'pointer';
 	status.addEventListener('click', () =>
 	{
@@ -688,8 +925,8 @@ Draw.loadPlugin(function(ui)
 		const success = values[1];
 		values[1] = function()
 		{
-			// First save and Save As do not emit fileLoaded. Discover a newly
-			// saved cloud file now so collaboration starts without reopening it.
+			// First save and Save As do not emit fileLoaded, so check now whether
+			// the saved file is a shared map instead of waiting for a reopen.
 			if (ui.getCurrentFile() === file) open().catch(showError);
 			if (success) success.apply(this, arguments);
 		};
@@ -708,12 +945,8 @@ Draw.loadPlugin(function(ui)
 				{
 					await call('close', {}, s);
 					if (!active(s)) throw new Error('The document changed while saving a copy. Retry.');
-					session = null;
-					reviewButton.style.display = 'none';
-					showPeople([], {});
-					autoSave.style.display = 'none';
+					endSession('Standalone copy · Share to collaborate');
 					this.shareMapGuard = false;
-					status.textContent = 'Standalone copy · Collaborate to share';
 					saveOrdinary(this, args);
 				}).catch(e => { if (error) error(e); else showError(e); });
 				return;
@@ -726,9 +959,55 @@ Draw.loadPlugin(function(ui)
 			}).catch(e => { if (error) error(e); else showError(e); });
 			return;
 		}
-		if (this.shareMapGuard || this === probing) { if (error) error({message: 'Wait for the shared map and its collaboration folder to finish opening'}); return; }
+		if (this.shareMapGuard || this === probing) { if (error) error({message: 'Wait for the shared map to finish connecting to the server'}); return; }
 		return saveOrdinary(this, arguments);
 	};
+	// File > Version History uses the editor's own revision dialog for the journal.
+	const originalRevisionSupport = LocalFile.prototype.isRevisionHistorySupported;
+	LocalFile.prototype.isRevisionHistorySupported = function()
+	{
+		return !!(session && session.file === this && session.initialized) || !!originalRevisionSupport?.apply(this, arguments);
+	};
+	const originalHistoryEnabled = ui.isRevisionHistoryEnabled;
+	ui.isRevisionHistoryEnabled = function()
+	{
+		const file = this.getCurrentFile();
+		return !!(session && session.file === file && session.initialized) || !!originalHistoryEnabled?.apply(this, arguments);
+	};
+	const originalRevisions = LocalFile.prototype.getRevisions;
+	LocalFile.prototype.getRevisions = function(success, error)
+	{
+		if (!session || session.file !== this) return originalRevisions?.apply(this, arguments);
+		const s = session;
+		versions(s).then(revs => success(revs, xml =>
+		{
+			ui.hideDialog();
+			restoreVersion(s, xml).catch(showError);
+		}), error);
+	};
+	const BaseRevisionDialog = window.RevisionDialog;
+	if (typeof BaseRevisionDialog === 'function')
+	{
+		// Lists who edited each version under its date, like Office version history.
+		window.RevisionDialog = function(editorUi, revs)
+		{
+			BaseRevisionDialog.apply(this, arguments);
+			if (!revs?.shareMap) return;
+			const heading = this.container.querySelector('h3');
+			if (heading) heading.textContent = 'Version History';
+			this.container.querySelectorAll('tr').forEach((row, index) =>
+			{
+				const rev = revs[revs.length - 1 - index];
+				if (!rev || !row.firstChild) return;
+				const who = document.createElement('div');
+				who.className = 'geSyncVersionAuthors';
+				who.textContent = rev.lastModifyingUserName + (rev.edits ? ' · ' + rev.edits + (rev.edits === 1 ? ' edit' : ' edits') : '');
+				who.style.cssText = 'opacity:.7;font-size:11px;white-space:normal';
+				row.firstChild.appendChild(who);
+			});
+		};
+		window.RevisionDialog.prototype = BaseRevisionDialog.prototype;
+	}
 	const originalChange = ui.handleFileChange;
 	ui.handleFileChange = function(curr, prev, file)
 	{
@@ -753,8 +1032,7 @@ Draw.loadPlugin(function(ui)
 		}
 		else return originalSync.apply(this, arguments);
 	};
-	// Keep the marker only on the journal's materialized view so copies can
-	// initialize their own journal when saved to another cloud location.
+	// Every loaded document is checked; only server maps start a session.
 	ui.editor.addListener('fileLoaded', () => open().catch(showError));
 	timer = setInterval(() =>
 	{
@@ -764,7 +1042,9 @@ Draw.loadPlugin(function(ui)
 			{
 				updateActivity(session);
 				if (session.lastPeers) showPeople(session.lastPeers, session);
-				if (!session.paused && Date.now() >= (session.retryAt || 0) && Date.now() - (session.lastCycle || 0) >= 1000) cycle(session);
+				// With push updates the poll is only a safety net.
+				const interval = session.watchHealthy && !session.remoteChanged ? 5000 : 1000;
+				if (!session.paused && Date.now() >= (session.retryAt || 0) && Date.now() - (session.lastCycle || 0) >= interval) cycle(session);
 			}
 			else if (!session.initialized) initialize(session).catch(e => { status.textContent = 'Connecting to server · Click for details'; status.title = e.message; });
 		}
@@ -783,7 +1063,22 @@ Draw.loadPlugin(function(ui)
 		window.clearTimeout(changeTimer);
 		changeTimer = window.setTimeout(() => { if (active(s) && !s.paused && Date.now() >= (s.retryAt || 0)) cycle(s); }, 150);
 	});
-	// Exposed on the existing UI object for integration tests and diagnostics.
-	ui.sharedFolder = {open, reviewConflicts, resolveConflict, cycle: () => session && cycle(session), getSession: () => session, diagnostics, serverOpen, serverCreate};
+	if (graph.container)
+	{
+		graph.container.addEventListener('pointermove', event =>
+		{
+			const s = session;
+			if (!s?.initialized || !active(s)) return;
+			const point = mxUtils.convertPoint(graph.container, event.clientX, event.clientY);
+			pointer = {x: Math.round(point.x / graph.view.scale - graph.view.translate.x), y: Math.round(point.y / graph.view.scale - graph.view.translate.y)};
+			updateActivity(s);
+		}, {passive: true});
+		graph.container.addEventListener('pointerleave', () => { pointer = null; if (session?.initialized) updateActivity(session); });
+	}
+	// Used by the collaboration panels, integration tests and diagnostics.
+	ui.sharedFolder = {open, reviewConflicts, resolveConflict, cycle: () => session && cycle(session), getSession: () => session, diagnostics, serverOpen, serverCreate,
+		versions: () => session && versions(session), restoreVersion: xml => session && restoreVersion(session, xml),
+		call: (action, values) => call(action, values), on: listener => listeners.add(listener), active: s => active(s),
+		displayName: () => session && displayName(session), addBarButton, addMenuItem, showError, joinDialog: serverJoinDialog};
 	open().catch(showError);
 });

@@ -168,6 +168,69 @@ try
 	await a('testUi.editor.undoManager.undo();true');
 	await until(() => b('testUi.editor.graph.model.getCell("peer").value === "Peer desk"'), 'server undo');
 	console.log('PASS: undo after incoming server patches propagates');
+	const editsBeforeRestore = (await folder.scan()).length;
+	assert.equal(await a('testUi.actions.get("revisionHistory").isEnabled()'), true);
+	await a('testUi.actions.get("revisionHistory").funct();true');
+	await until(() => a('document.querySelectorAll(".geSyncVersionAuthors").length >= 2'), 'version history dialog');
+	const versionRows = await a('[...document.querySelectorAll(".geSyncVersionAuthors")].map(node=>node.textContent)');
+	assert.equal(versionRows.at(-1), 'Shared map created');
+	assert.match(versionRows[0], / edits$/);
+	await a('[...document.querySelectorAll(".geSyncVersionAuthors")].at(-1).closest("tr").dispatchEvent(new MouseEvent("click",{bubbles:true}));true');
+	const restoreButton = '[...document.querySelectorAll(".geDialog button")].find(button=>button.textContent===mxResources.get("restore"))';
+	await until(() => a('!!' + restoreButton + ' && !' + restoreButton + '.disabled'), 'original version preview');
+	if (process.env.DRAWIO_HISTORY_SCREENSHOT) await fs.writeFile(process.env.DRAWIO_HISTORY_SCREENSHOT, (await first.webContents.capturePage()).toPNG());
+	await a(restoreButton + '.click();true');
+	await until(() => a('document.querySelectorAll(".geDialog").length > 1'), 'restore confirmation');
+	await a('[...document.querySelectorAll(".geDialog")].at(-1).querySelector(".gePrimaryBtn").click();true');
+	const original = 'testUi.editor.graph.model.getCell("desk").value === "Desk" && !testUi.editor.graph.model.getCell("peer")';
+	await until(async () => await a(original) && await b(original), 'restored original version on both editors');
+	assert.equal(await a('!testUi.dialog'), true);
+	const afterRestore = await folder.scan();
+	assert.equal(afterRestore.length, editsBeforeRestore + 1, 'restore is one new edit; earlier versions are kept');
+	assert.equal(afterRestore.every(op => Number.isSafeInteger(op.time)), true);
+	assert.equal((await a('testUi.sharedFolder.versions().then(revs=>revs.length)')) >= 2, true);
+	console.log('PASS: File > Version History lists versions with editors, previews the original and restores it for everyone as a new edit');
+	await until(() => b('!!testUi.sharedFolder.getSession().watchHealthy'), 'push updates connected');
+	const pushStarted = Date.now();
+	await a('testUi.editor.graph.model.setValue(testUi.editor.graph.model.getCell("desk"),"Pushed");true');
+	await until(() => b('testUi.editor.graph.model.getCell("desk").value === "Pushed"'), 'pushed edit');
+	const pushMs = Date.now() - pushStarted;
+	assert.ok(pushMs < 2500, 'pushed edit arrived in ' + pushMs + ' ms, before the five-second safety poll');
+	console.log('PASS: an edit is pushed to the other editor in ' + pushMs + ' ms without waiting for a poll');
+	await a('(()=>{const c=testUi.editor.graph.container;const r=c.getBoundingClientRect();c.dispatchEvent(new PointerEvent("pointermove",{clientX:r.left+120,clientY:r.top+90,bubbles:true}));return true})()');
+	await until(() => b('document.querySelectorAll(".geSyncPointer").length === 1'), 'live pointer');
+	console.log('PASS: the other editor sees a live, named pointer');
+	await a('testUi.collaborationPanels.showChanges(false);true');
+	await until(() => a('[...document.querySelectorAll(".geSyncChange")].some(card=>card.textContent.includes("Changed text from") && card.textContent.includes("\\"Pushed\\""))'), 'show changes list');
+	await a('testUi.editor.graph.setSelectionCell(testUi.editor.graph.model.getCell("desk"));testUi.collaborationPanels.showChanges(true);true');
+	await until(() => a('document.querySelectorAll(".geSyncChange").length > 0 && [...document.querySelectorAll(".geSyncChange")].every(card=>!card.textContent.includes("Peer desk"))'), 'selection changes');
+	console.log('PASS: Show Changes lists who changed what, newest first, and filters to the selected shape');
+	const page = await a('testUi.currentPage.getId()');
+	await a('new Promise((resolve,reject)=>{const f=testUi.getCurrentFile();const c=f.newComment("Check this desk",testUi.getCurrentUser());c.anchor={p:' + JSON.stringify(page) + ',c:"desk"};f.addComment(c,resolve,reject)}).then(()=>true)');
+	await until(() => b('new Promise(resolve=>testUi.getCurrentFile().getComments(list=>resolve(list.some(c=>c.content==="Check this desk"&&c.getAnchorCellId()==="desk")),()=>resolve(false)))'), 'comment reaches the other editor');
+	assert.equal(await b('testUi.commentsSupported() && testUi.anchoredCommentsSupported() && testUi.mentionsSupported()'), true);
+	const myEmail = await a('testUi.sharedFolder.getSession().email');
+	if (myEmail)
+	{
+		await folder.comment({op: 'add', content: 'Can you review this, +' + myEmail + '?', name: 'Another editor', email: 'another.editor@example.test'});
+		await until(() => a('document.querySelector(".geSyncMention")?.textContent.includes("Another editor mentioned you")'), 'mention notification');
+		console.log('PASS: an @mention of this account shows a notification');
+	}
+	console.log('PASS: comments anchored to shapes are stored on the server and pushed to other editors');
+	if (process.env.DRAWIO_FEATURES_SCREENSHOT)
+	{
+		const shoot = async name =>
+		{
+			first.webContents.setBackgroundThrottling(false);
+			await new Promise(resolve => setTimeout(resolve, 400));
+			await fs.writeFile(process.env.DRAWIO_FEATURES_SCREENSHOT + '-' + name + '.png', (await first.webContents.capturePage()).toPNG());
+		};
+		await a('testUi.collaborationPanels.showChanges(false);testUi.actions.get("comments").funct();true');
+		await shoot('panels');
+		await a('testUi.actions.get("comments").funct();[...document.querySelectorAll("button")].find(b=>b.textContent==="Share").click();true');
+		await shoot('share');
+		await a('testUi.hideDialog();document.querySelector(".geSyncChanges").style.display="none";true');
+	}
 	await a('(()=>{const file=testUi.getCurrentFile();file.fileObject={path:' + JSON.stringify(copyFile) + ',name:"Standalone copy.drawio",type:"utf-8"};file.title="Standalone copy.drawio";return new Promise((resolve,reject)=>file.save(false,resolve,reject,null,true))})().then(()=>true)');
 	await until(() => a('!testUi.sharedFolder.getSession() && testUi.editor.graph.isEnabled()'), 'ordinary Save As');
 	assert.doesNotMatch(await fs.readFile(copyFile, 'utf8'), /sharemap-room=/);
